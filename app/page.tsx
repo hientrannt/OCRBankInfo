@@ -10,7 +10,8 @@ import { fileToBase64ForApi, fileToCanvasForTesseract } from "@/lib/image";
 import { exportToExcel } from "@/lib/excel";
 import { FatalOcrError, postOcr } from "@/lib/ocrClient";
 
-type Engine = "both" | "claude" | "tesseract";
+type Engine = "both" | "ai" | "tesseract";
+type Provider = "claude" | "gemini";
 type Status = "example" | "pending" | "processing" | "ok" | "review" | "error";
 
 interface Row extends BankFields {
@@ -24,7 +25,30 @@ interface Row extends BankFields {
   note: string;
 }
 
-type ServerInfo = { hasKey: boolean; needPassword: boolean };
+type ServerInfo = {
+  hasKey: boolean;
+  serverKeys?: Record<Provider, boolean>;
+  needPassword: boolean;
+  defaultModels?: Record<Provider, string>;
+};
+
+const AI: Record<Provider, { label: string; keyHint: string; keyUrl: string; model: string }> = {
+  claude: {
+    label: "Claude (Anthropic)",
+    keyHint: "sk-ant-...",
+    keyUrl: "https://console.anthropic.com/settings/keys",
+    model: "claude-opus-5-5",
+  },
+  gemini: {
+    label: "Gemini (Google)",
+    keyHint: "AIza...",
+    keyUrl: "https://aistudio.google.com/apikey",
+    model: "gemini-2.5-flash",
+  },
+};
+const SETTINGS_KEY = "ocr-ai-settings";
+type AiSettings = { provider: Provider; keys: Record<Provider, string>; models: Record<Provider, string> };
+const DEFAULT_SETTINGS: AiSettings = { provider: "claude", keys: { claude: "", gemini: "" }, models: { claude: "", gemini: "" } };
 
 const STATUS_LABEL: Record<Status, string> = {
   example: "Ví dụ",
@@ -87,6 +111,8 @@ export default function Home() {
   const [server, setServer] = useState<ServerInfo | null>(null);
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
+  const [ai, setAi] = useState<AiSettings>(DEFAULT_SETTINGS);
+  const [showKey, setShowKey] = useState(false);
   const [withImages, setWithImages] = useState(true);
   const [exporting, setExporting] = useState<{ done: number; total: number } | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -98,13 +124,12 @@ export default function Home() {
   useEffect(() => {
     try {
       setPassword(localStorage.getItem(PASSWORD_KEY) || "");
+      const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
+      if (saved) setAi({ ...DEFAULT_SETTINGS, ...saved, keys: { ...DEFAULT_SETTINGS.keys, ...saved.keys }, models: { ...DEFAULT_SETTINGS.models, ...saved.models } });
     } catch {}
     fetch("/api/ocr")
       .then((r) => r.json())
-      .then((info: ServerInfo) => {
-        setServer(info);
-        if (!info.hasKey) setEngine("tesseract");
-      })
+      .then((info: ServerInfo) => setServer(info))
       .catch(() => setServer(null));
   }, []);
 
@@ -118,6 +143,25 @@ export default function Home() {
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [running]);
+
+  function changeAi(patch: (prev: AiSettings) => AiSettings) {
+    setAi((prev) => {
+      const next = patch(prev);
+      try {
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }
+
+  const provider = ai.provider;
+  const userKey = ai.keys[provider].trim();
+  const serverHasKey = (info: ServerInfo | null, p: Provider) =>
+    Boolean(info?.serverKeys ? info.serverKeys[p] : p === "claude" && info?.hasKey);
+  const aiReady = Boolean(userKey) || serverHasKey(server, provider);
+  const usingServerKey = !userKey && serverHasKey(server, provider);
+  const engineShown: Engine = aiReady ? selectedEngine : "tesseract";
+  const aiName = provider === "gemini" ? "Gemini" : "Claude";
 
   function onPasswordChange(value: string) {
     setPassword(value);
@@ -228,7 +272,10 @@ export default function Home() {
 
     const [c, t] = await Promise.all([
       fileToBase64ForApi(file).then((payload) =>
-        postOcr(payload, { password, shouldStop: () => stopRef.current }),
+        postOcr(
+          { ...payload, provider, model: ai.models[provider].trim() || undefined },
+          { password, apiKey: userKey || undefined, shouldStop: () => stopRef.current },
+        ),
       ),
       engine === "both" ? readWithTesseract(file).catch(() => null) : Promise.resolve(null),
     ]);
@@ -238,7 +285,7 @@ export default function Home() {
       name: String(c.recipient_name ?? "").replace(/\s+/g, " ").trim(),
     };
     const issues = validate(result);
-    if (c.uncertain) issues.push(c.note ? `AI không chắc chắn: ${c.note}` : "AI không chắc chắn");
+    if (c.uncertain) issues.push(c.note ? `${aiName} không chắc chắn: ${c.note}` : `${aiName} không chắc chắn`);
     let note = "";
     if (t) {
       const diffs: string[] = [];
@@ -259,9 +306,10 @@ export default function Home() {
     // Bấm Bắt đầu trước khi kiểm tra máy chủ xong: hỏi lại để biết có API key không
     const info: ServerInfo | null =
       server ?? (await fetch("/api/ocr").then((r) => r.json()).catch(() => null));
-    const engine: Engine = info && !info.hasKey ? "tesseract" : selectedEngine;
-    if (engine !== "tesseract" && info?.needPassword && !password) {
-      setMessage("Nhập mật khẩu truy cập trước khi đọc bằng Claude.");
+    const ready = Boolean(userKey) || serverHasKey(info, provider);
+    const engine: Engine = ready ? selectedEngine : "tesseract";
+    if (engine !== "tesseract" && !userKey && info?.needPassword && !password) {
+      setMessage(`Nhập mật khẩu truy cập (hoặc nhập API key ${aiName} của bạn) trước khi đọc bằng AI.`);
       setRunning(false);
       return;
     }
@@ -364,7 +412,7 @@ export default function Home() {
   }
 
   const reread = useCallback((r: Row) => run([r]), // eslint-disable-line react-hooks/exhaustive-deps
-    [server, selectedEngine, password]);
+    [server, selectedEngine, password, ai]);
   const busy = running || !!exporting;
   const pendingCount = realRows.filter((r) => r.status === "pending" || r.status === "error").length;
 
@@ -379,12 +427,63 @@ export default function Home() {
         </p>
       </header>
 
-      {server && !server.hasKey && (
-        <div className="notice">
-          Máy chủ chưa có <code>ANTHROPIC_API_KEY</code> nên chỉ đọc được bằng Tesseract (kém chính xác hơn). Thêm
-          key trong Vercel → Settings → Environment Variables rồi Redeploy.
-        </div>
-      )}
+      <section className="panel ai">
+        <span className="field-label">AI đọc ảnh</span>
+        {(Object.keys(AI) as Provider[]).map((p) => (
+          <label key={p} className="radio">
+            <input
+              type="radio"
+              name="provider"
+              value={p}
+              checked={provider === p}
+              disabled={busy}
+              onChange={() => changeAi((prev) => ({ ...prev, provider: p }))}
+            />
+            {AI[p].label}
+          </label>
+        ))}
+        <span className="key-box">
+          <input
+            type={showKey ? "text" : "password"}
+            className="text-input key"
+            placeholder={`API key ${aiName} (${AI[provider].keyHint})`}
+            aria-label={`API key ${aiName}`}
+            autoComplete="off"
+            spellCheck={false}
+            value={ai.keys[provider]}
+            disabled={busy}
+            onChange={(e) => {
+              const v = e.target.value;
+              changeAi((prev) => ({ ...prev, keys: { ...prev.keys, [prev.provider]: v } }));
+            }}
+          />
+          <button type="button" className="btn sm" onClick={() => setShowKey((v) => !v)}>
+            {showKey ? "Ẩn" : "Hiện"}
+          </button>
+        </span>
+        <input
+          className="text-input model"
+          placeholder={`Model: ${server?.defaultModels?.[provider] || AI[provider].model}`}
+          aria-label="Model"
+          spellCheck={false}
+          value={ai.models[provider]}
+          disabled={busy}
+          onChange={(e) => {
+            const v = e.target.value;
+            changeAi((prev) => ({ ...prev, models: { ...prev.models, [prev.provider]: v } }));
+          }}
+        />
+        <a href={AI[provider].keyUrl} target="_blank" rel="noreferrer">
+          Lấy API key {aiName}
+        </a>
+        <span className={`key-status ${aiReady ? "ok" : "missing"}`}>
+          {userKey
+            ? "Dùng key bạn nhập (lưu trên trình duyệt này)"
+            : usingServerKey
+              ? "Dùng key trên máy chủ"
+              : `Chưa có key ${aiName}: chỉ đọc được bằng Tesseract`}
+        </span>
+      </section>
 
       <section
         className={`panel drop${dragOver ? " over" : ""}`}
@@ -416,17 +515,17 @@ export default function Home() {
       <section className="panel">
         <label className="field">
           Chế độ đọc
-          <select value={selectedEngine} onChange={(e) => setEngine(e.target.value as Engine)} disabled={busy}>
-            <option value="both" disabled={server?.hasKey === false}>
-              Claude AI + Tesseract kiểm tra chéo (khuyên dùng)
+          <select value={engineShown} onChange={(e) => setEngine(e.target.value as Engine)} disabled={busy}>
+            <option value="both" disabled={!aiReady}>
+              {aiName} + Tesseract kiểm tra chéo (khuyên dùng)
             </option>
-            <option value="claude" disabled={server?.hasKey === false}>
-              Chỉ Claude AI (nhanh hơn)
+            <option value="ai" disabled={!aiReady}>
+              Chỉ {aiName} (nhanh hơn)
             </option>
             <option value="tesseract">Chỉ Tesseract (miễn phí, kém chính xác)</option>
           </select>
         </label>
-        {server?.needPassword && selectedEngine !== "tesseract" && (
+        {server?.needPassword && usingServerKey && engineShown !== "tesseract" && (
           <input
             type="password"
             className="password"

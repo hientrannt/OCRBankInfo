@@ -57,3 +57,17 @@ test("bấm Dừng thì không thử lại nữa", async () => {
   await assert.rejects(postOcr(payload, { password: "", fetchImpl: f.impl, sleep: noSleep, shouldStop: () => true }));
   assert.equal(f.calls.n, 1);
 });
+
+test("gửi kèm AI đã chọn và API key người dùng nhập", async () => {
+  let seen: RequestInit | undefined;
+  const impl = (async (_url: string, init: RequestInit) => {
+    seen = init;
+    return json(200, ok);
+  }) as unknown as typeof fetch;
+  await postOcr({ ...payload, provider: "gemini", model: "gemini-x" }, { password: "", apiKey: "AIza-test", fetchImpl: impl });
+  const headers = seen!.headers as Record<string, string>;
+  assert.equal(headers["x-user-api-key"], "AIza-test");
+  assert.equal(JSON.parse(String(seen!.body)).provider, "gemini");
+  const g = fakeFetch([json(400, { code: "bad_key", error: "API key Gemini không hợp lệ" })]);
+  await assert.rejects(postOcr(payload, { password: "", apiKey: "sai", fetchImpl: g.impl, sleep: noSleep }), FatalOcrError);
+});
