@@ -65,11 +65,17 @@ export async function GET() {
 
 export async function POST(req: Request) {
   if (!checkPassword(req)) {
-    return NextResponse.json({ error: "Sai mật khẩu truy cập", needPassword: true }, { status: 401 });
+    return NextResponse.json(
+      { error: "Sai mật khẩu truy cập", code: "bad_password", needPassword: true },
+      { status: 401 },
+    );
   }
   if (!process.env.ANTHROPIC_API_KEY) {
     return NextResponse.json(
-      { error: "Chưa cấu hình ANTHROPIC_API_KEY (file .env.local hoặc Environment Variables trên Vercel)" },
+      {
+        error: "Chưa cấu hình ANTHROPIC_API_KEY (file .env.local hoặc Environment Variables trên Vercel)",
+        code: "no_key",
+      },
       { status: 500 },
     );
   }
@@ -106,8 +112,28 @@ export async function POST(req: Request) {
     if (!block || block.type !== "tool_use") {
       return NextResponse.json({ error: "Model không trả về kết quả" }, { status: 502 });
     }
-    return NextResponse.json(block.input);
+    const input = block.input as Record<string, unknown>;
+    return NextResponse.json({
+      bank_raw: String(input.bank_raw ?? ""),
+      bank_code: String(input.bank_code ?? ""),
+      account_number: String(input.account_number ?? ""),
+      recipient_name: String(input.recipient_name ?? ""),
+      uncertain: Boolean(input.uncertain),
+      note: String(input.note ?? ""),
+    });
   } catch (err) {
+    // Giữ nguyên mã lỗi của Claude (429 quá tải, 529 bận, 401 sai key...) để trình duyệt biết có nên thử lại
+    if (err instanceof Anthropic.APIError) {
+      const status = err.status && err.status >= 400 ? err.status : 502;
+      const code = status === 401 ? "bad_key" : status === 429 || status === 529 ? "rate_limited" : "api_error";
+      const error =
+        code === "bad_key"
+          ? "ANTHROPIC_API_KEY không hợp lệ"
+          : code === "rate_limited"
+            ? "Claude đang quá tải, sẽ thử lại"
+            : err.message;
+      return NextResponse.json({ error, code }, { status: status === 401 ? 500 : status });
+    }
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: message }, { status: 502 });
   }
