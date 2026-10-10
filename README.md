@@ -66,6 +66,32 @@ Khi chọn thư mục có ảnh **trùng tên file** với ảnh đã có trong 
 Sửa tay trong bảng hoặc bấm "Đã kiểm tra" cũng được lưu vào lịch sử. Lịch sử nằm trong trình duyệt (IndexedDB):
 dùng máy khác/trình duyệt khác hoặc xóa dữ liệu trình duyệt sẽ không còn. Ảnh lỗi không được lưu (lần sau sẽ đọc lại).
 
+## Sao lưu, khôi phục, nhập từ Excel
+
+Ở tab **Lịch sử**:
+
+- **Sao lưu (tải file .json)**: toàn bộ lịch sử kèm ảnh thu nhỏ vào một file. Dùng để chuyển sang máy khác
+  hoặc giữ phòng khi xóa dữ liệu trình duyệt.
+- **Khôi phục từ file sao lưu**: nạp lại file .json. Dòng trùng tên file sẽ hỏi ghi đè hay giữ dữ liệu hiện có.
+- **Nhập từ file Excel cũ**: đọc file Excel do app này xuất ra (cần cột "Tên file"; ảnh trong ô cũng được lấy).
+  Ảnh có trong file này sẽ được bỏ qua khi đọc thư mục lần sau.
+
+## Lịch sử dùng chung trên máy chủ
+
+Tab **Cài đặt AI** → **Nơi lưu lịch sử** → **Máy chủ (dùng chung)**: nhiều máy / nhiều người cùng thấy một lịch sử.
+
+- Dữ liệu lưu trong **Vercel Blob (riêng tư)**, store `ocr-bank-history` (vùng Singapore) đã kết nối với project.
+  Gói miễn phí có giới hạn số lượt ghi mỗi tháng; app gom 25 ảnh/lần ghi để tiết kiệm.
+- **Bắt buộc đặt `APP_PASSWORD`** trên Vercel (dữ liệu có số tài khoản). Ai có mật khẩu đều xem/sửa được lịch sử.
+- Bấm **Chuyển lịch sử từ trình duyệt lên máy chủ** để đưa lịch sử cũ lên.
+- Chạy trên máy riêng (không phải Vercel): lịch sử dùng chung lưu ở thư mục `.data/ocr-history`.
+
+## Cảnh báo trùng số tài khoản
+
+App tự đánh dấu **Trùng STK** khi cùng một số tài khoản thuộc nhiều mã KH khác nhau, hoặc một mã KH có nhiều
+số tài khoản khác nhau (so cả với lịch sử). Cảnh báo hiện trong bảng, trong Excel (cột Ghi chú) và có bộ lọc
+"Chỉ dòng trùng STK" ở tab Lịch sử.
+
 ## Chọn AI và nhập API key ngay trên giao diện
 
 Ở tab **Cài đặt AI**:

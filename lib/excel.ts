@@ -9,8 +9,8 @@ export interface ExportRow {
   name: string;
   fileName: string;
   note: string;
-  /** File gốc hoặc ảnh thu nhỏ đã lưu trong lịch sử */
-  image?: Blob;
+  /** File gốc, ảnh thu nhỏ đã lưu, hoặc hàm tải ảnh khi cần (lịch sử trên máy chủ) */
+  image?: Blob | (() => Promise<Blob | undefined>);
 }
 
 export interface ExportOptions {
@@ -77,7 +77,8 @@ export async function exportToExcel(rows: ExportRow[], opts: ExportOptions = {})
     for (let i = 0; i < rows.length; i++) {
       const excelRow = ws.getRow(i + 2);
       excelRow.height = IMAGE_ROW_HEIGHT;
-      const file = rows[i].image;
+      const src = rows[i].image;
+      const file = typeof src === "function" ? await src().catch(() => undefined) : src;
       if (file) {
         try {
           // Làm lần lượt từng ảnh để không giữ hàng nghìn ảnh lớn trong bộ nhớ cùng lúc

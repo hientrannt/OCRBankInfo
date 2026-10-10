@@ -1,5 +1,5 @@
-import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
+import { checkPassword } from "@/lib/auth";
 import {
   DEFAULT_MODELS,
   ProviderError,
@@ -16,15 +16,6 @@ const ENV_KEYS: Record<Provider, string | undefined> = {
   gemini: process.env.GEMINI_API_KEY,
 };
 const KEY_NAMES: Record<Provider, string> = { claude: "ANTHROPIC_API_KEY", gemini: "GEMINI_API_KEY" };
-
-/** Khi đặt APP_PASSWORD, chỉ người biết mật khẩu mới dùng được API key trên máy chủ (tránh bị người lạ dùng tốn tiền) */
-function checkPassword(req: Request): boolean {
-  const expected = process.env.APP_PASSWORD;
-  if (!expected) return true;
-  const given = Buffer.from(req.headers.get("x-app-password") || "");
-  const want = Buffer.from(expected);
-  return given.length === want.length && timingSafeEqual(given, want);
-}
 
 export async function GET() {
   return NextResponse.json({
