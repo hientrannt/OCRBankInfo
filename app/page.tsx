@@ -58,7 +58,7 @@ async function readWithClaude(file: File, password: string): Promise<ClaudeResul
 
 export default function Home() {
   const [rows, setRows] = useState<Row[]>([]);
-  const [engine, setEngine] = useState<Engine>("both");
+  const [selectedEngine, setEngine] = useState<Engine>("both");
   const [running, setRunning] = useState(false);
   const [onlyReview, setOnlyReview] = useState(false);
   const [preview, setPreview] = useState<Row | null>(null);
@@ -135,7 +135,7 @@ export default function Home() {
     return parseOcrText(data.text);
   }
 
-  async function processRow(row: Row) {
+  async function processRow(row: Row, engine: Engine) {
     update(row.id, { status: "processing", note: "" });
     try {
       if (engine === "tesseract") {
@@ -184,12 +184,15 @@ export default function Home() {
     if (!targets.length) return;
     stopRef.current = false;
     setRunning(true);
+    // Bấm Bắt đầu trước khi kiểm tra máy chủ xong: hỏi lại để biết có API key không
+    const info = server ?? (await fetch("/api/ocr").then((r) => r.json()).catch(() => null));
+    const engine: Engine = info && !info.hasKey ? "tesseract" : selectedEngine;
     const queue = [...targets];
     const concurrency = engine === "tesseract" ? 2 : CLAUDE_CONCURRENCY;
     await Promise.all(
       Array.from({ length: concurrency }, async () => {
         while (queue.length && !stopRef.current) {
-          await processRow(queue.shift()!);
+          await processRow(queue.shift()!, engine);
         }
       }),
     );
@@ -255,7 +258,7 @@ export default function Home() {
           />
         </label>
 
-        <select value={engine} onChange={(e) => setEngine(e.target.value as Engine)} disabled={running}>
+        <select value={selectedEngine} onChange={(e) => setEngine(e.target.value as Engine)} disabled={running}>
           <option value="both" disabled={server?.hasKey === false}>
             Claude AI + Tesseract kiểm tra chéo (khuyên dùng)
           </option>
@@ -265,7 +268,7 @@ export default function Home() {
           <option value="tesseract">Chỉ Tesseract (offline, miễn phí)</option>
         </select>
 
-        {server?.needPassword && engine !== "tesseract" && (
+        {server?.needPassword && selectedEngine !== "tesseract" && (
           <input
             type="password"
             className="password"
