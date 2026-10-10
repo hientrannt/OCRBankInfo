@@ -1,5 +1,5 @@
 /** Mở file ảnh; báo lỗi tiếng Việt khi file hỏng hoặc không phải ảnh thật */
-async function decode(file: File): Promise<ImageBitmap> {
+async function decode(file: Blob): Promise<ImageBitmap> {
   try {
     return await createImageBitmap(file);
   } catch {
@@ -50,7 +50,7 @@ export function fileToCanvasForTesseract(file: File) {
  * vẽ ở độ phân giải gấp đôi cho rõ chữ khi phóng to.
  */
 export async function fileToThumbnail(
-  file: File,
+  file: Blob,
   boxW: number,
   boxH: number,
 ): Promise<{ base64: string; width: number; height: number }> {
@@ -68,4 +68,22 @@ export async function fileToThumbnail(
   ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close();
   return { base64: canvas.toDataURL("image/jpeg", 0.85).split(",")[1], width, height };
+}
+
+/** Ảnh thu nhỏ dạng Blob JPEG để lưu vào lịch sử (đủ rõ để xem lại và chèn vào Excel) */
+export async function fileToThumbBlob(file: Blob, maxW = 480, maxH = 360): Promise<Blob> {
+  const bitmap = await decode(file);
+  const scale = Math.min(maxW / bitmap.width, maxH / bitmap.height, 1);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  const ctx = canvas.getContext("2d")!;
+  ctx.imageSmoothingQuality = "high";
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  return new Promise((resolve, reject) =>
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Không tạo được ảnh thu nhỏ"))), "image/jpeg", 0.85),
+  );
 }

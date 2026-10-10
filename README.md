@@ -48,9 +48,27 @@ lần sau tự cài đặt, build và mở trình duyệt.
 
 (Chạy chế độ phát triển: `npm run dev`. Sau khi cập nhật code, xóa thư mục `.next` để script build lại.)
 
+## Các tab
+
+- **Đọc ảnh**: chọn thư mục, đọc, sửa, xuất Excel.
+- **Lịch sử**: mọi ảnh đã đọc xong (OK / Cần kiểm tra) được lưu trên trình duyệt này kèm ảnh thu nhỏ.
+  Tìm theo mã KH, tên, số tài khoản; xuất Excel toàn bộ lịch sử (kèm ảnh); xóa từng dòng hoặc xóa hết.
+- **Cài đặt AI**: chọn Claude / Gemini, nhập API key, model, mật khẩu truy cập.
+
+## Ảnh đã đọc rồi thì bỏ qua
+
+Khi chọn thư mục có ảnh **trùng tên file** với ảnh đã có trong lịch sử, app hỏi:
+
+- **Không, bỏ qua ảnh đã có** → lấy lại dữ liệu cũ cho các ảnh đó (ghi chú "Đã có từ …") và chỉ đọc ảnh mới.
+- **Có, đọc lại toàn bộ** → đọc lại tất cả và ghi đè lịch sử.
+- **Hủy** → không làm gì.
+
+Sửa tay trong bảng hoặc bấm "Đã kiểm tra" cũng được lưu vào lịch sử. Lịch sử nằm trong trình duyệt (IndexedDB):
+dùng máy khác/trình duyệt khác hoặc xóa dữ liệu trình duyệt sẽ không còn. Ảnh lỗi không được lưu (lần sau sẽ đọc lại).
+
 ## Chọn AI và nhập API key ngay trên giao diện
 
-Ở khung **AI đọc ảnh**:
+Ở tab **Cài đặt AI**:
 
 - Tick chọn **Claude (Anthropic)** hoặc **Gemini (Google)**.
 - Dán API key vào ô bên cạnh (bấm **Lấy API key** để mở trang tạo key). Key chỉ lưu trong trình duyệt của bạn
