@@ -15,6 +15,8 @@ const FATAL_CODES = new Set(["bad_password", "no_key", "bad_key"]);
 
 export interface ReadOptions {
   password: string;
+  /** API key người dùng tự nhập trên giao diện (để trống = dùng key trên máy chủ) */
+  apiKey?: string;
   /** Dừng việc chờ thử lại khi người dùng bấm Dừng */
   shouldStop?: () => boolean;
   retries?: number;
@@ -30,7 +32,7 @@ const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
  * hoặc mất mạng, chờ tăng dần 2s, 4s, 8s...
  */
 export async function postOcr(
-  payload: { image: string; mediaType: string },
+  payload: { image: string; mediaType: string; provider?: "claude" | "gemini"; model?: string },
   opts: ReadOptions,
 ): Promise<ClaudeResult> {
   const { retries = 4, baseDelayMs = 2000, fetchImpl = fetch, sleep = defaultSleep } = opts;
@@ -44,7 +46,11 @@ export async function postOcr(
     try {
       res = await fetchImpl("/api/ocr", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-app-password": opts.password },
+        headers: {
+          "Content-Type": "application/json",
+          "x-app-password": opts.password,
+          ...(opts.apiKey ? { "x-user-api-key": opts.apiKey } : {}),
+        },
         body: JSON.stringify(payload),
       });
     } catch {

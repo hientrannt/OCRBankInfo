@@ -48,6 +48,18 @@ lần sau tự cài đặt, build và mở trình duyệt.
 
 (Chạy chế độ phát triển: `npm run dev`. Sau khi cập nhật code, xóa thư mục `.next` để script build lại.)
 
+## Chọn AI và nhập API key ngay trên giao diện
+
+Ở khung **AI đọc ảnh**:
+
+- Tick chọn **Claude (Anthropic)** hoặc **Gemini (Google)**.
+- Dán API key vào ô bên cạnh (bấm **Lấy API key** để mở trang tạo key). Key chỉ lưu trong trình duyệt của bạn
+  (localStorage), được gửi kèm từng lần đọc qua máy chủ của app tới Claude/Gemini và không lưu lại trên máy chủ.
+- Có key riêng thì **không cần mật khẩu truy cập**. Để trống ô key thì app dùng key đặt trên Vercel
+  (`ANTHROPIC_API_KEY` / `GEMINI_API_KEY`) và hỏi mật khẩu `APP_PASSWORD`.
+- Ô **Model** để trống = dùng mặc định (`claude-opus-5-5`, `gemini-2.5-flash`); có thể gõ model khác, ví dụ
+  `claude-sonnet-5-5` hoặc `gemini-2.5-pro`.
+
 ## Sử dụng
 
 1. Bấm **Chọn thư mục ảnh** (hoặc **Chọn nhiều ảnh**, hoặc kéo thả thư mục vào trang). File không phải .jpg/.png
@@ -79,6 +91,8 @@ Chỉ cần rà các dòng **Cần kiểm tra** (tích "Chỉ hiện dòng cần
 | `ANTHROPIC_API_KEY` | — | API key Claude |
 | `OCR_MODEL` | `claude-opus-5-5` | Đổi sang `claude-sonnet-5-5` để rẻ hơn |
 | `APP_PASSWORD` | (trống) | Mật khẩu truy cập; nên đặt khi đưa lên Internet |
+| `GEMINI_API_KEY` | — | API key Gemini (tuỳ chọn) |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Model Gemini mặc định |
 
 Ảnh chỉ được gửi tới API Claude để đọc, không lưu trên máy chủ.
 
