@@ -81,3 +81,12 @@ td input.mono { font-family: ui-monospace, Consolas, monospace; width: 150px; }
 }
 .modal img { max-width: 100%; max-height: 85vh; border-radius: 8px; background: #fff; }
 .modal p { color: #fff; }
+
+.alert {
+  background: color-mix(in srgb, var(--review) 14%, var(--card)); border: 1px solid var(--review);
+  border-radius: 10px; padding: 10px 12px; margin: 0 0 12px;
+}
+.password {
+  font: inherit; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--card); color: var(--text); width: 180px;
+}

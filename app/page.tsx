@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Scheduler } from "tesseract.js";
 import { IMAGE_EXTENSIONS, parseFileName } from "@/lib/filename";
 import { normalizeBankName } from "@/lib/banks";
@@ -42,11 +42,13 @@ interface ClaudeResult {
   note?: string;
 }
 
-async function readWithClaude(file: File): Promise<ClaudeResult> {
+const PASSWORD_KEY = "ocr-app-password";
+
+async function readWithClaude(file: File, password: string): Promise<ClaudeResult> {
   const payload = await fileToBase64ForApi(file);
   const res = await fetch("/api/ocr", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "x-app-password": password },
     body: JSON.stringify(payload),
   });
   const data = await res.json();
@@ -61,7 +63,29 @@ export default function Home() {
   const [onlyReview, setOnlyReview] = useState(false);
   const [preview, setPreview] = useState<Row | null>(null);
   const [folderName, setFolderName] = useState("");
+  const [server, setServer] = useState<{ hasKey: boolean; needPassword: boolean } | null>(null);
+  const [password, setPassword] = useState("");
   const stopRef = useRef(false);
+
+  useEffect(() => {
+    try {
+      setPassword(localStorage.getItem(PASSWORD_KEY) || "");
+    } catch {}
+    fetch("/api/ocr")
+      .then((r) => r.json())
+      .then((info) => {
+        setServer(info);
+        if (!info.hasKey) setEngine("tesseract");
+      })
+      .catch(() => setServer(null));
+  }, []);
+
+  function onPasswordChange(value: string) {
+    setPassword(value);
+    try {
+      localStorage.setItem(PASSWORD_KEY, value);
+    } catch {}
+  }
   const schedulerRef = useRef<Scheduler | null>(null);
 
   const update = (id: string, patch: Partial<Row>) =>
@@ -128,7 +152,7 @@ export default function Home() {
       }
 
       const [c, t] = await Promise.all([
-        readWithClaude(row.file),
+        readWithClaude(row.file, password),
         engine === "both" ? readWithTesseract(row.file).catch(() => null) : Promise.resolve(null),
       ]);
       const result: BankFields = {
@@ -211,6 +235,13 @@ export default function Home() {
         </p>
       </header>
 
+      {server && !server.hasKey && (
+        <p className="alert">
+          Máy chủ chưa có <code>ANTHROPIC_API_KEY</code> nên chỉ đọc được bằng Tesseract (kém chính xác hơn). Thêm key
+          vào <code>.env.local</code> hoặc Environment Variables trên Vercel rồi chạy lại / Redeploy.
+        </p>
+      )}
+
       <section className="toolbar">
         <label className="btn primary">
           📁 Chọn thư mục
@@ -225,10 +256,25 @@ export default function Home() {
         </label>
 
         <select value={engine} onChange={(e) => setEngine(e.target.value as Engine)} disabled={running}>
-          <option value="both">Claude AI + Tesseract kiểm tra chéo (khuyên dùng)</option>
-          <option value="claude">Chỉ Claude AI</option>
+          <option value="both" disabled={server?.hasKey === false}>
+            Claude AI + Tesseract kiểm tra chéo (khuyên dùng)
+          </option>
+          <option value="claude" disabled={server?.hasKey === false}>
+            Chỉ Claude AI
+          </option>
           <option value="tesseract">Chỉ Tesseract (offline, miễn phí)</option>
         </select>
+
+        {server?.needPassword && engine !== "tesseract" && (
+          <input
+            type="password"
+            className="password"
+            placeholder="Mật khẩu truy cập"
+            value={password}
+            onChange={(e) => onPasswordChange(e.target.value)}
+            disabled={running}
+          />
+        )}
 
         {!running ? (
           <>

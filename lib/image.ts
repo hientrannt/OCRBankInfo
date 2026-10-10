@@ -21,9 +21,12 @@ export async function fileToBase64ForApi(file: File): Promise<{ image: string; m
   const canvas = await toCanvas(file, 1568);
   const mediaType = "image/png";
   const dataUrl = canvas.toDataURL(mediaType);
-  // PNG quá lớn thì chuyển sang JPEG chất lượng cao
-  if (dataUrl.length > 4_500_000) {
-    return { image: canvas.toDataURL("image/jpeg", 0.95).split(",")[1], mediaType: "image/jpeg" };
+  // PNG lớn thì chuyển sang JPEG chất lượng cao: Vercel giới hạn body request 4.5MB
+  if (dataUrl.length > 3_000_000) {
+    for (const q of [0.95, 0.9, 0.85]) {
+      const jpeg = canvas.toDataURL("image/jpeg", q);
+      if (jpeg.length < 3_000_000 || q === 0.85) return { image: jpeg.split(",")[1], mediaType: "image/jpeg" };
+    }
   }
   return { image: dataUrl.split(",")[1], mediaType };
 }
