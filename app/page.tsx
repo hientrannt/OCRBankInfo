@@ -7,15 +7,11 @@ import { normalizeBankName } from "@/lib/banks";
 import { parseOcrText, type BankFields } from "@/lib/parseText";
 import { digitsOnly, looseKey } from "@/lib/text";
 import { fileToBase64ForApi, fileToCanvasForTesseract, fileToThumbBlob } from "@/lib/image";
-import {
-  clearHistory,
-  deleteHistory,
-  findHistory,
-  getAllHistory,
-  historyKey,
-  saveHistory,
-  type HistoryRecord,
-} from "@/lib/history";
+import { getAllHistory, historyKey, type HistoryRecord } from "@/lib/history";
+import { createSharedStore, localStore, type HistoryStore, type StoreKind } from "@/lib/historyStore";
+import { makeBackup, parseBackup } from "@/lib/backup";
+import { importExcel } from "@/lib/excelImport";
+import { findDuplicateAccounts } from "@/lib/duplicates";
 import HistoryTab from "@/components/HistoryTab";
 import { exportToExcel } from "@/lib/excel";
 import { FatalOcrError, postOcr } from "@/lib/ocrClient";
@@ -84,6 +80,7 @@ const CLAUDE_CONCURRENCY = 3;
 const TESSERACT_WORKERS = 2;
 const PASSWORD_KEY = "ocr-app-password";
 const ENGINE_KEY = "ocr-engine";
+const STORE_KEY = "ocr-history-store";
 const HEAD = ["STT", "Mã số KH", "Tên CSKD", "Ngân hàng nhận", "Tài khoản/thẻ nhận", "Tên người nhận", "Tên file", "Ghi chú"];
 
 const EXAMPLE: Row = {
@@ -138,6 +135,21 @@ export default function Home() {
   const [tab, setTab] = useState<Tab>("read");
   const [history, setHistory] = useState<HistoryRecord[]>([]);
   const [historyError, setHistoryError] = useState("");
+  const [storeKind, setStoreKind] = useState<StoreKind>("local");
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const passwordRef = useRef("");
+  passwordRef.current = password;
+  const store: HistoryStore = useMemo(
+    () =>
+      storeKind === "shared"
+        ? createSharedStore(
+            () => passwordRef.current,
+            (e) => setHistoryError(`Chưa lưu được lên máy chủ: ${e.message}`),
+          )
+        : localStore,
+    [storeKind],
+  );
+  const historyRef = useRef<HistoryRecord[]>([]);
   const [dup, setDup] = useState<DupPrompt | null>(null);
   const saveTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const [withImages, setWithImages] = useState(true);
@@ -155,17 +167,45 @@ export default function Home() {
       if (savedEngine === "both" || savedEngine === "ai" || savedEngine === "tesseract") setEngine(savedEngine);
       const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
       if (saved) setAi({ ...DEFAULT_SETTINGS, ...saved, keys: { ...DEFAULT_SETTINGS.keys, ...saved.keys }, models: { ...DEFAULT_SETTINGS.models, ...saved.models } });
+      if (localStorage.getItem(STORE_KEY) === "shared") setStoreKind("shared");
     } catch {}
     fetch("/api/ocr")
       .then((r) => r.json())
       .then((info: ServerInfo) => setServer(info))
       .catch(() => setServer(null));
-    getAllHistory()
-      .then(setHistory)
-      .catch(() =>
-        setHistoryError("Trình duyệt không cho lưu lịch sử (có thể đang ở chế độ ẩn danh). Kết quả sẽ không được nhớ."),
-      );
   }, []);
+
+  // Nạp lịch sử từ nơi lưu đang chọn (trình duyệt hoặc máy chủ); đổi nơi lưu / mật khẩu thì nạp lại
+  const reloadHistory = useCallback(async () => {
+    setHistoryLoaded(false);
+    try {
+      setHistory(await store.getAll());
+      setHistoryError("");
+    } catch (err) {
+      setHistory([]);
+      setHistoryError(
+        store.kind === "shared"
+          ? `Lịch sử dùng chung: ${err instanceof Error ? err.message : err}`
+          : "Trình duyệt không cho lưu lịch sử (có thể đang ở chế độ ẩn danh). Kết quả sẽ không được nhớ.",
+      );
+    } finally {
+      setHistoryLoaded(true);
+    }
+  }, [store]);
+  useEffect(() => {
+    void reloadHistory();
+  }, [reloadHistory]);
+  historyRef.current = history;
+
+  // Lịch sử dùng chung: gửi nốt phần đang chờ khi rời tab
+  useEffect(() => {
+    const onHide = () => document.visibilityState === "hidden" && void store.flush();
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      void store.flush();
+    };
+  }, [store]);
 
   // Cảnh báo khi đóng/tải lại trang lúc đang đọc (mất kết quả)
   useEffect(() => {
@@ -222,7 +262,12 @@ export default function Home() {
     }
     files.sort((a, b) => a.name.localeCompare(b.name, "vi", { numeric: true }));
     const skippedMsg = skipped ? `Đã bỏ qua ${skipped} file không phải ảnh .jpg/.png.` : "";
-    const existing = await findHistory(files.map((f) => f.name)).catch(() => new Map<string, HistoryRecord>());
+    const byName = new Map(historyRef.current.map((h) => [h.fileName, h]));
+    const existing = new Map<string, HistoryRecord>();
+    for (const f of files) {
+      const rec = byName.get(historyKey(f.name));
+      if (rec) existing.set(historyKey(f.name), rec);
+    }
     if (existing.size) {
       // Có ảnh đã đọc trước đây: hỏi đọc lại (ghi đè) hay bỏ qua
       setDup({ files, folder, skippedMsg, existing });
@@ -308,14 +353,14 @@ export default function Home() {
       thumb,
     };
     try {
-      await saveHistory([rec]);
+      await store.save([rec]);
       setHistory((list) => {
         const old = list.find((h) => h.fileName === rec.fileName);
         const merged = { ...rec, thumb: rec.thumb ?? old?.thumb };
         return [merged, ...list.filter((h) => h.fileName !== rec.fileName)];
       });
     } catch {
-      setHistoryError("Không lưu được lịch sử trên trình duyệt này.");
+      setHistoryError(store.kind === "shared" ? "Không lưu được lịch sử lên máy chủ." : "Không lưu được lịch sử trên trình duyệt này.");
     }
   }
 
@@ -466,6 +511,7 @@ export default function Home() {
     );
     // Ảnh còn đang "Đang đọc" khi bấm Dừng sẽ đọc xong; ảnh chưa đọc vẫn ở trạng thái Chờ
     setRunning(false);
+    void store.flush();
   }
 
   const realRows = rows.filter((r) => r.status !== "example");
@@ -483,10 +529,23 @@ export default function Home() {
   }, [rows]);
 
   const indexById = useMemo(() => new Map(rows.map((r, i) => [r.id, i + 1])), [rows]);
-  const visible = onlyReview ? rows.filter((r) => r.status === "review" || r.status === "error") : rows;
+
+  // Cảnh báo trùng STK: so các dòng đang đọc với nhau và với lịch sử
+  const rowWarnings = useMemo(() => {
+    const current = rows.filter((r) => r.status !== "example" && r.account);
+    const names = new Set(current.map((r) => r.fileName));
+    return findDuplicateAccounts([...current, ...history.filter((h) => !names.has(h.fileName))]);
+  }, [rows, history]);
+  const historyWarnings = useMemo(() => findDuplicateAccounts(history), [history]);
+  const dupRowCount = rows.filter((r) => rowWarnings.has(r.fileName)).length;
+
+  const visible = onlyReview
+    ? rows.filter((r) => r.status === "review" || r.status === "error" || rowWarnings.has(r.fileName))
+    : rows;
 
   function noteFor(r: Row) {
-    return r.status === "ok" ? (r.note.startsWith("Đã kiểm tra") ? "Đã kiểm tra" : "") : r.note || STATUS_LABEL[r.status];
+    const base = r.status === "ok" ? (r.note.startsWith("Đã kiểm tra") ? "Đã kiểm tra" : "") : r.note || STATUS_LABEL[r.status];
+    return [...(rowWarnings.get(r.fileName) ?? []), base].filter(Boolean).join("; ");
   }
 
   async function onExport() {
@@ -502,7 +561,10 @@ export default function Home() {
           name: r.name,
           fileName: r.fileName,
           note: noteFor(r),
-          image: r.file ?? history.find((h) => h.fileName === r.fileName)?.thumb,
+          image: r.file ?? (() => {
+            const h = history.find((x) => x.fileName === r.fileName);
+            return h ? store.loadThumb(h) : Promise.resolve(undefined);
+          }),
         })),
         {
           fileName: folderName ? `thong-tin-ngan-hang_${folderName}.xlsx` : "thong-tin-ngan-hang.xlsx",
@@ -528,8 +590,13 @@ export default function Home() {
           account: r.account,
           name: r.name,
           fileName: r.fileName,
-          note: r.status === "ok" ? (r.note.startsWith("Đã kiểm tra") ? "Đã kiểm tra" : "") : r.note || "Cần kiểm tra",
-          image: r.thumb,
+          note: [
+            ...(historyWarnings.get(r.fileName) ?? []),
+            r.status === "ok" ? (r.note.startsWith("Đã kiểm tra") ? "Đã kiểm tra" : "") : r.note || "Cần kiểm tra",
+          ]
+            .filter(Boolean)
+            .join("; "),
+          image: () => store.loadThumb(r),
         })),
         {
           fileName: `lich-su-ocr-ngan-hang_${new Date().toISOString().slice(0, 10)}.xlsx`,
@@ -541,6 +608,107 @@ export default function Home() {
       setMessage(`Không tạo được file Excel: ${err instanceof Error ? err.message : err}`);
     } finally {
       setExporting(null);
+    }
+  }
+
+  function download(data: BlobPart, fileName: string, type: string) {
+    const url = URL.createObjectURL(new Blob([data], { type }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+
+  async function onBackup() {
+    setExporting({ done: 0, total: history.length });
+    try {
+      const json = await makeBackup(history, store.loadThumb, (done, total) => setExporting({ done, total }));
+      download(json, `sao-luu-ocr-ngan-hang_${new Date().toISOString().slice(0, 10)}.json`, "application/json");
+      setMessage(`Đã sao lưu ${history.length} dòng lịch sử. Giữ file .json này để khôi phục sang máy/trình duyệt khác.`);
+    } catch (err) {
+      setMessage(`Không sao lưu được: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setExporting(null);
+    }
+  }
+
+  /** Đưa bản ghi (từ file sao lưu / Excel) vào lịch sử; hỏi trước khi ghi đè dòng đã có */
+  async function importRecords(records: HistoryRecord[], source: string, extra = "") {
+    if (!records.length) {
+      setMessage(`Không có dòng nào để nhập từ ${source}. ${extra}`.trim());
+      return;
+    }
+    const have = new Set(history.map((h) => h.fileName));
+    const dupCount = records.filter((r) => have.has(r.fileName)).length;
+    let list = records;
+    if (dupCount) {
+      const overwrite = window.confirm(
+        `${dupCount}/${records.length} dòng trong ${source} trùng tên file với lịch sử hiện có.\n\n` +
+          "OK = ghi đè bằng dữ liệu trong file\nHủy = giữ dữ liệu hiện có, chỉ thêm dòng mới",
+      );
+      if (!overwrite) list = records.filter((r) => !have.has(r.fileName));
+    }
+    setExporting({ done: 0, total: list.length });
+    try {
+      await store.save(list);
+      await store.flush();
+      await reloadHistory();
+      const added = list.filter((r) => !have.has(r.fileName)).length;
+      setMessage(
+        `Đã nhập ${list.length} dòng từ ${source}: ${added} mới, ${list.length - added} ghi đè${
+          list.length < records.length ? `, giữ nguyên ${records.length - list.length} dòng đã có` : ""
+        }. ${extra}`.trim(),
+      );
+    } catch (err) {
+      setMessage(`Không nhập được: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setExporting(null);
+    }
+  }
+
+  async function onRestore(file: File) {
+    try {
+      await importRecords(parseBackup(await file.text()), "file sao lưu");
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function onImportExcel(file: File) {
+    try {
+      const { records, skippedNoFileName } = await importExcel(await file.arrayBuffer());
+      await importRecords(
+        records,
+        "file Excel",
+        skippedNoFileName ? `Bỏ qua ${skippedNoFileName} dòng không có tên file.` : "",
+      );
+    } catch (err) {
+      setMessage(`Không đọc được file Excel: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  function changeStore(kind: StoreKind) {
+    void store.flush();
+    setStoreKind(kind);
+    try {
+      localStorage.setItem(STORE_KEY, kind);
+    } catch {}
+  }
+
+  /** Chép lịch sử đang có trên trình duyệt lên máy chủ (dùng chung) */
+  async function copyLocalToShared() {
+    try {
+      const local = await getAllHistory();
+      if (!local.length) {
+        setMessage("Trình duyệt này chưa có lịch sử để chuyển.");
+        return;
+      }
+      await importRecords(local, "lịch sử trên trình duyệt");
+    } catch (err) {
+      setMessage(`Không chuyển được: ${err instanceof Error ? err.message : err}`);
     }
   }
 
@@ -686,10 +854,46 @@ export default function Home() {
               <span className="hint">Máy chủ không đặt mật khẩu (APP_PASSWORD).</span>
             )}
           </section>
-          <section className="panel tips">
-            <span className="hint">
-              Key và mật khẩu chỉ lưu trên trình duyệt này. Lịch sử ảnh đã đọc cũng lưu trên trình duyệt này: dùng máy
-              khác hoặc trình duyệt khác sẽ không thấy.
+          <section className="panel ai">
+            <span className="field-label">Nơi lưu lịch sử</span>
+            <label className="radio">
+              <input
+                type="radio"
+                name="store"
+                checked={storeKind === "local"}
+                disabled={busy}
+                onChange={() => changeStore("local")}
+              />
+              Trình duyệt này
+            </label>
+            <label className="radio">
+              <input
+                type="radio"
+                name="store"
+                checked={storeKind === "shared"}
+                disabled={busy}
+                onChange={() => changeStore("shared")}
+              />
+              Máy chủ (dùng chung nhiều máy / nhiều người)
+            </label>
+            {storeKind === "shared" && (
+              <>
+                <span className={`key-status ${historyError ? "missing" : "ok"}`}>
+                  {!historyLoaded ? "Đang kết nối…" : historyError ? "Chưa dùng được" : `Đã kết nối · ${history.length} dòng`}
+                </span>
+                <button className="btn sm" disabled={busy} onClick={() => void reloadHistory()}>
+                  Kết nối lại
+                </button>
+                <button className="btn sm" disabled={busy || !!historyError} onClick={copyLocalToShared}>
+                  Chuyển lịch sử từ trình duyệt lên máy chủ
+                </button>
+              </>
+            )}
+            <span className="hint full">
+              {storeKind === "shared"
+                ? "Lịch sử nằm trên máy chủ (Vercel Blob, riêng tư), ai có mật khẩu truy cập đều thấy. Nhập mật khẩu ở trên rồi bấm Kết nối lại."
+                : "Lịch sử chỉ nằm trên trình duyệt này: máy khác hoặc trình duyệt khác sẽ không thấy. Dùng Sao lưu ở tab Lịch sử để giữ một bản."}{" "}
+              Key và mật khẩu luôn chỉ lưu trên trình duyệt này.
             </span>
           </section>
         </>
@@ -798,10 +1002,11 @@ export default function Home() {
             <span className="pill ok">OK: {stats.ok}</span>
             <span className="pill review">Cần kiểm tra: {stats.review}</span>
             <span className="pill error">Lỗi: {stats.error}</span>
+            {dupRowCount > 0 && <span className="pill error">Trùng STK: {dupRowCount}</span>}
             <span className="spacer" />
             <label className="check">
               <input type="checkbox" checked={onlyReview} onChange={(e) => setOnlyReview(e.target.checked)} />
-              Chỉ hiện dòng cần kiểm tra
+              Chỉ hiện dòng cần kiểm tra / trùng STK
             </label>
             <div className="bar">
               <div style={{ width: stats.total ? `${(stats.done / stats.total) * 100}%` : 0 }} />
@@ -831,6 +1036,7 @@ export default function Home() {
                     row={r}
                     index={indexById.get(r.id)!}
                     running={busy}
+                    warning={rowWarnings.get(r.fileName)?.join("\n") ?? ""}
                     onUpdate={editRow}
                     onPreview={setPreview}
                     onReread={reread}
@@ -846,16 +1052,30 @@ export default function Home() {
       {tab === "history" && (
         <HistoryTab
           records={history}
-          busy={busy}
+          busy={busy || !historyLoaded}
+          storeLabel={storeKind === "shared" ? "Máy chủ (dùng chung)" : "Trình duyệt này"}
+          warnings={historyWarnings}
+          loadThumb={store.loadThumb}
           onDelete={async (names) => {
-            await deleteHistory(names).catch(() => {});
-            setHistory((list) => list.filter((h) => !names.includes(h.fileName)));
+            try {
+              await store.remove(names);
+              setHistory((list) => list.filter((h) => !names.includes(h.fileName)));
+            } catch (err) {
+              setMessage(`Không xóa được: ${err instanceof Error ? err.message : err}`);
+            }
           }}
           onClear={async () => {
-            await clearHistory().catch(() => {});
-            setHistory([]);
+            try {
+              await store.clear();
+              setHistory([]);
+            } catch (err) {
+              setMessage(`Không xóa được: ${err instanceof Error ? err.message : err}`);
+            }
           }}
           onExport={exportHistory}
+          onBackup={onBackup}
+          onRestore={onRestore}
+          onImportExcel={onImportExcel}
         />
       )}
 
@@ -915,6 +1135,7 @@ const RowView = memo(function RowView({
   row: r,
   index,
   running,
+  warning,
   onUpdate,
   onPreview,
   onReread,
@@ -922,6 +1143,8 @@ const RowView = memo(function RowView({
   row: Row;
   index: number;
   running: boolean;
+  /** Cảnh báo trùng STK, mỗi dòng một cảnh báo (chuỗi để memo so sánh được) */
+  warning: string;
   onUpdate: (id: string, patch: Partial<Row>) => void;
   onPreview: (r: Row) => void;
   onReread: (r: Row) => void;
@@ -938,7 +1161,7 @@ const RowView = memo(function RowView({
     </td>
   );
   return (
-    <tr className={r.status}>
+    <tr className={warning && r.status !== "error" ? "error" : r.status}>
       <td>{example ? "–" : index}</td>
       <td>
         {r.url ? (
@@ -962,6 +1185,13 @@ const RowView = memo(function RowView({
       {input("name", "w-name")}
       <td>
         <span className={`pill ${r.status}`}>{STATUS_LABEL[r.status]}</span>
+        {warning && <span className="pill error">Trùng STK</span>}
+        {warning &&
+          warning.split("\n").map((w) => (
+            <div key={w} className="note warn">
+              {w}
+            </div>
+          ))}
         {r.note && <div className="note">{r.note}</div>}
       </td>
       <td className="acts">

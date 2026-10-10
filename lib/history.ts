@@ -17,6 +17,8 @@ export interface HistoryRecord {
   readAt: number;
   /** Ảnh thu nhỏ (JPEG) để xem lại và chèn vào Excel khi không còn file gốc */
   thumb?: Blob;
+  /** Lịch sử dùng chung: có ảnh thu nhỏ trên máy chủ (tải khi cần) */
+  hasThumb?: boolean;
 }
 
 const DB_NAME = "ocr-bank";

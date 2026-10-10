@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { HistoryRecord } from "@/lib/history";
 import { looseKey } from "@/lib/text";
 
@@ -10,15 +10,32 @@ function fmtTime(t: number) {
   return new Date(t).toLocaleString("vi-VN", { dateStyle: "short", timeStyle: "short" });
 }
 
-/** Ảnh thu nhỏ lưu trong lịch sử (Blob) -> URL tạm, thu hồi khi không còn hiển thị */
-function Thumb({ blob, alt, onOpen }: { blob?: Blob; alt: string; onOpen: (url: string) => void }) {
+/** Ảnh thu nhỏ trong lịch sử (có sẵn hoặc tải từ máy chủ) -> URL tạm, thu hồi khi không còn hiển thị */
+function Thumb({
+  record,
+  load,
+  alt,
+  onOpen,
+}: {
+  record: HistoryRecord;
+  load: (r: HistoryRecord) => Promise<Blob | undefined>;
+  alt: string;
+  onOpen: (url: string) => void;
+}) {
   const [url, setUrl] = useState("");
   useEffect(() => {
-    if (!blob) return;
-    const u = URL.createObjectURL(blob);
-    setUrl(u);
-    return () => URL.revokeObjectURL(u);
-  }, [blob]);
+    let u = "";
+    let alive = true;
+    load(record).then((blob) => {
+      if (!alive || !blob) return;
+      u = URL.createObjectURL(blob);
+      setUrl(u);
+    });
+    return () => {
+      alive = false;
+      if (u) URL.revokeObjectURL(u);
+    };
+  }, [record, load]);
   if (!url) return <div className="thumb ph">ảnh</div>;
   // eslint-disable-next-line @next/next/no-img-element
   return <img src={url} alt={alt} className="thumb" loading="lazy" onClick={() => onOpen(url)} />;
@@ -27,18 +44,33 @@ function Thumb({ blob, alt, onOpen }: { blob?: Blob; alt: string; onOpen: (url: 
 export default function HistoryTab({
   records,
   busy,
+  storeLabel,
+  warnings,
+  loadThumb,
   onDelete,
   onClear,
   onExport,
+  onBackup,
+  onRestore,
+  onImportExcel,
 }: {
   records: HistoryRecord[];
   busy: boolean;
+  storeLabel: string;
+  warnings: Map<string, string[]>;
+  loadThumb: (r: HistoryRecord) => Promise<Blob | undefined>;
   onDelete: (fileNames: string[]) => void;
   onClear: () => void;
   onExport: (records: HistoryRecord[]) => void;
+  onBackup: () => void;
+  onRestore: (file: File) => void;
+  onImportExcel: (file: File) => void;
 }) {
   const [query, setQuery] = useState("");
   const [onlyReview, setOnlyReview] = useState(false);
+  const [onlyDup, setOnlyDup] = useState(false);
+  const restoreRef = useRef<HTMLInputElement>(null);
+  const excelRef = useRef<HTMLInputElement>(null);
   const [page, setPage] = useState(0);
   const [preview, setPreview] = useState<{ url: string; name: string } | null>(null);
 
@@ -47,14 +79,16 @@ export default function HistoryTab({
     return records.filter(
       (r) =>
         (!onlyReview || r.status === "review") &&
+        (!onlyDup || warnings.has(r.fileName)) &&
         (!q || looseKey(`${r.fileName} ${r.customerCode} ${r.businessName} ${r.account} ${r.name} ${r.bank}`).includes(q)),
     );
-  }, [records, query, onlyReview]);
+  }, [records, query, onlyReview, onlyDup, warnings]);
 
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const current = Math.min(page, pages - 1);
   const shown = filtered.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE);
   const reviewCount = records.filter((r) => r.status === "review").length;
+  const dupCount = records.filter((r) => warnings.has(r.fileName)).length;
 
   return (
     <>
@@ -73,6 +107,10 @@ export default function HistoryTab({
           <input type="checkbox" checked={onlyReview} onChange={(e) => setOnlyReview(e.target.checked)} />
           Chỉ dòng cần kiểm tra ({reviewCount})
         </label>
+        <label className="check">
+          <input type="checkbox" checked={onlyDup} onChange={(e) => setOnlyDup(e.target.checked)} />
+          Chỉ dòng trùng STK ({dupCount})
+        </label>
         <span className="spacer" />
         <button className="btn primary" disabled={busy || !filtered.length} onClick={() => onExport(filtered)}>
           Xuất Excel {filtered.length !== records.length ? `(${filtered.length} dòng đang lọc)` : `(${records.length})`}
@@ -87,6 +125,44 @@ export default function HistoryTab({
         >
           Xóa toàn bộ
         </button>
+      </section>
+
+      <section className="panel">
+        <span className="hint">
+          Đang lưu: <b>{storeLabel}</b>
+        </span>
+        <span className="spacer" />
+        <button className="btn" disabled={busy || !records.length} onClick={onBackup}>
+          Sao lưu (tải file .json)
+        </button>
+        <button className="btn" disabled={busy} onClick={() => restoreRef.current?.click()}>
+          Khôi phục từ file sao lưu
+        </button>
+        <button className="btn" disabled={busy} onClick={() => excelRef.current?.click()}>
+          Nhập từ file Excel cũ
+        </button>
+        <input
+          ref={restoreRef}
+          type="file"
+          accept=".json,application/json"
+          hidden
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = "";
+            if (f) onRestore(f);
+          }}
+        />
+        <input
+          ref={excelRef}
+          type="file"
+          accept=".xlsx"
+          hidden
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = "";
+            if (f) onImportExcel(f);
+          }}
+        />
       </section>
 
       {!records.length ? (
@@ -112,9 +188,14 @@ export default function HistoryTab({
             </thead>
             <tbody>
               {shown.map((r) => (
-                <tr key={r.fileName} className={r.status}>
+                <tr key={r.fileName} className={warnings.has(r.fileName) ? "error" : r.status}>
                   <td>
-                    <Thumb blob={r.thumb} alt={r.fileName} onOpen={(url) => setPreview({ url, name: r.fileName })} />
+                    <Thumb
+                      record={r}
+                      load={loadThumb}
+                      alt={r.fileName}
+                      onOpen={(url) => setPreview({ url, name: r.fileName })}
+                    />
                   </td>
                   <td>{r.customerCode}</td>
                   <td className="cell-wide">{r.businessName}</td>
@@ -123,6 +204,12 @@ export default function HistoryTab({
                   <td>{r.name}</td>
                   <td>
                     <span className={`pill ${r.status}`}>{r.status === "ok" ? "OK" : "Cần kiểm tra"}</span>
+                    {warnings.has(r.fileName) && <span className="pill error">Trùng STK</span>}
+                    {warnings.get(r.fileName)?.map((w) => (
+                      <div key={w} className="note warn">
+                        {w}
+                      </div>
+                    ))}
                     {r.note && <div className="note">{r.note}</div>}
                   </td>
                   <td className="nowrap">

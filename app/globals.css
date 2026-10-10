@@ -125,3 +125,7 @@ td.w-acc input { font-family: var(--font-num); min-width: 150px; letter-spacing:
 .dialog p { margin: 0; line-height: 1.55; }
 .dup-list { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.6; max-height: 160px; overflow: auto; word-break: break-word; }
 .dialog-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+
+.note.warn { color: var(--err); font-weight: 500; }
+.pill + .pill { margin-left: 4px; }
+.hint.full { flex-basis: 100%; }
