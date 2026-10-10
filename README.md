@@ -22,7 +22,11 @@ cp .env.example .env.local     # rồi điền ANTHROPIC_API_KEY
 npm run build && npm start     # mở http://localhost:3000
 ```
 
-(Chạy chế độ phát triển: `npm run dev`.)
+**Cách nhanh:** cài [Node.js](https://nodejs.org) rồi nhấp đúp `start-windows.bat` (Windows)
+hoặc chạy `./start-mac-linux.sh` (macOS/Linux). Lần đầu script tạo `.env.local` để bạn điền API key,
+lần sau tự cài đặt, build và mở trình duyệt.
+
+(Chạy chế độ phát triển: `npm run dev`. Sau khi cập nhật code, xóa thư mục `.next` để script build lại.)
 
 ## Sử dụng
 
