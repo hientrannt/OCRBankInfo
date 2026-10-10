@@ -6,12 +6,33 @@ import { IMAGE_EXTENSIONS, parseFileName } from "@/lib/filename";
 import { normalizeBankName } from "@/lib/banks";
 import { parseOcrText, type BankFields } from "@/lib/parseText";
 import { digitsOnly, looseKey } from "@/lib/text";
-import { fileToBase64ForApi, fileToCanvasForTesseract } from "@/lib/image";
+import { fileToBase64ForApi, fileToCanvasForTesseract, fileToThumbBlob } from "@/lib/image";
+import {
+  clearHistory,
+  deleteHistory,
+  findHistory,
+  getAllHistory,
+  historyKey,
+  saveHistory,
+  type HistoryRecord,
+} from "@/lib/history";
+import HistoryTab from "@/components/HistoryTab";
 import { exportToExcel } from "@/lib/excel";
 import { FatalOcrError, postOcr } from "@/lib/ocrClient";
 
 type Engine = "both" | "ai" | "tesseract";
 type Provider = "claude" | "gemini";
+type Tab = "read" | "history" | "settings";
+
+/** Hỏi người dùng khi thư mục mới chọn có ảnh trùng tên với ảnh đã đọc trước đây */
+interface DupPrompt {
+  files: File[];
+  folder: string;
+  skippedMsg: string;
+  existing: Map<string, HistoryRecord>;
+}
+
+const fmtTime = (t: number) => new Date(t).toLocaleString("vi-VN", { dateStyle: "short", timeStyle: "short" });
 type Status = "example" | "pending" | "processing" | "ok" | "review" | "error";
 
 interface Row extends BankFields {
@@ -62,6 +83,7 @@ const STATUS_LABEL: Record<Status, string> = {
 const CLAUDE_CONCURRENCY = 3;
 const TESSERACT_WORKERS = 2;
 const PASSWORD_KEY = "ocr-app-password";
+const ENGINE_KEY = "ocr-engine";
 const HEAD = ["STT", "Mã số KH", "Tên CSKD", "Ngân hàng nhận", "Tài khoản/thẻ nhận", "Tên người nhận", "Tên file", "Ghi chú"];
 
 const EXAMPLE: Row = {
@@ -113,6 +135,11 @@ export default function Home() {
   const [message, setMessage] = useState("");
   const [ai, setAi] = useState<AiSettings>(DEFAULT_SETTINGS);
   const [showKey, setShowKey] = useState(false);
+  const [tab, setTab] = useState<Tab>("read");
+  const [history, setHistory] = useState<HistoryRecord[]>([]);
+  const [historyError, setHistoryError] = useState("");
+  const [dup, setDup] = useState<DupPrompt | null>(null);
+  const saveTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const [withImages, setWithImages] = useState(true);
   const [exporting, setExporting] = useState<{ done: number; total: number } | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -124,6 +151,8 @@ export default function Home() {
   useEffect(() => {
     try {
       setPassword(localStorage.getItem(PASSWORD_KEY) || "");
+      const savedEngine = localStorage.getItem(ENGINE_KEY);
+      if (savedEngine === "both" || savedEngine === "ai" || savedEngine === "tesseract") setEngine(savedEngine);
       const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
       if (saved) setAi({ ...DEFAULT_SETTINGS, ...saved, keys: { ...DEFAULT_SETTINGS.keys, ...saved.keys }, models: { ...DEFAULT_SETTINGS.models, ...saved.models } });
     } catch {}
@@ -131,6 +160,11 @@ export default function Home() {
       .then((r) => r.json())
       .then((info: ServerInfo) => setServer(info))
       .catch(() => setServer(null));
+    getAllHistory()
+      .then(setHistory)
+      .catch(() =>
+        setHistoryError("Trình duyệt không cho lưu lịch sử (có thể đang ở chế độ ẩn danh). Kết quả sẽ không được nhớ."),
+      );
   }, []);
 
   // Cảnh báo khi đóng/tải lại trang lúc đang đọc (mất kết quả)
@@ -175,7 +209,7 @@ export default function Home() {
     [],
   );
 
-  function setFiles(all: File[], folder: string) {
+  async function setFiles(all: File[], folder: string) {
     const files = all.filter((f) => IMAGE_EXTENSIONS.test(f.name));
     const skipped = all.filter((f) => !IMAGE_EXTENSIONS.test(f.name) && !f.name.startsWith(".")).length;
     if (!files.length) {
@@ -186,29 +220,117 @@ export default function Home() {
       );
       return;
     }
-    rowsRef.current.forEach((r) => r.url && URL.revokeObjectURL(r.url));
     files.sort((a, b) => a.name.localeCompare(b.name, "vi", { numeric: true }));
-    setFolderName(folder);
-    setMessage(skipped ? `Đã bỏ qua ${skipped} file không phải ảnh .jpg/.png.` : "");
-    setRows(
-      files.map((file, i) => {
-        const { customerCode, businessName } = parseFileName(file.name);
-        return {
-          id: `r${i}`,
-          file,
-          url: URL.createObjectURL(file),
-          fileName: file.name.normalize("NFC"),
-          customerCode,
-          businessName,
-          bank: "",
-          account: "",
-          name: "",
-          status: "pending",
-          note: "",
-        };
-      }),
-    );
+    const skippedMsg = skipped ? `Đã bỏ qua ${skipped} file không phải ảnh .jpg/.png.` : "";
+    const existing = await findHistory(files.map((f) => f.name)).catch(() => new Map<string, HistoryRecord>());
+    if (existing.size) {
+      // Có ảnh đã đọc trước đây: hỏi đọc lại (ghi đè) hay bỏ qua
+      setDup({ files, folder, skippedMsg, existing });
+      return;
+    }
+    loadRows(files, folder, skippedMsg, new Map(), false);
   }
+
+  /** Nạp danh sách ảnh vào bảng; useSaved = lấy dữ liệu cũ cho ảnh đã có trong lịch sử. Trả về các dòng mới tạo. */
+  function loadRows(
+    files: File[],
+    folder: string,
+    msg: string,
+    existing: Map<string, HistoryRecord>,
+    useSaved: boolean,
+  ): Row[] {
+    rowsRef.current.forEach((r) => r.url && URL.revokeObjectURL(r.url));
+    setFolderName(folder);
+    setMessage(msg);
+    const next: Row[] = files.map((file, i) => {
+      const { customerCode, businessName } = parseFileName(file.name);
+      const base: Row = {
+        id: `r${i}-${Date.now()}`,
+        file,
+        url: URL.createObjectURL(file),
+        fileName: file.name.normalize("NFC"),
+        customerCode,
+        businessName,
+        bank: "",
+        account: "",
+        name: "",
+        status: "pending",
+        note: "",
+      };
+      const saved = useSaved ? existing.get(historyKey(file.name)) : undefined;
+      if (!saved) return base;
+      return {
+        ...base,
+        customerCode: saved.customerCode,
+        businessName: saved.businessName,
+        bank: saved.bank,
+        account: saved.account,
+        name: saved.name,
+        status: saved.status,
+        note: [`Đã có từ ${fmtTime(saved.readAt)} (${saved.engine})`, saved.note].filter(Boolean).join(" · "),
+      };
+    });
+    setRows(next);
+    return next;
+  }
+
+  function answerDup(choice: "reread" | "skip" | "cancel") {
+    const d = dup;
+    setDup(null);
+    if (!d || choice === "cancel") return;
+    const next = loadRows(d.files, d.folder, d.skippedMsg, d.existing, choice === "skip");
+    const todo = next.filter((r) => r.status === "pending");
+    if (!todo.length) {
+      setMessage(`Tất cả ${next.length} ảnh đã có dữ liệu, đã lấy từ lịch sử. ${d.skippedMsg}`.trim());
+      return;
+    }
+    run(todo);
+  }
+
+  /** Lưu dòng vào lịch sử (chỉ dòng đọc xong: OK hoặc Cần kiểm tra) */
+  async function persist(row: Row, engineLabel: string | null, withThumb: boolean) {
+    if (row.status !== "ok" && row.status !== "review") return;
+    const prev = history.find((h) => h.fileName === row.fileName);
+    let thumb: Blob | undefined;
+    if (withThumb && row.file) thumb = await fileToThumbBlob(row.file).catch(() => undefined);
+    const rec: HistoryRecord = {
+      fileName: row.fileName,
+      customerCode: row.customerCode,
+      businessName: row.businessName,
+      bank: row.bank,
+      account: row.account,
+      name: row.name,
+      status: row.status,
+      note: row.note.replace(/^Đã có từ [^·]*(· )?/, ""),
+      engine: engineLabel ?? prev?.engine ?? "",
+      size: row.file?.size ?? prev?.size ?? 0,
+      readAt: engineLabel ? Date.now() : (prev?.readAt ?? Date.now()),
+      thumb,
+    };
+    try {
+      await saveHistory([rec]);
+      setHistory((list) => {
+        const old = list.find((h) => h.fileName === rec.fileName);
+        const merged = { ...rec, thumb: rec.thumb ?? old?.thumb };
+        return [merged, ...list.filter((h) => h.fileName !== rec.fileName)];
+      });
+    } catch {
+      setHistoryError("Không lưu được lịch sử trên trình duyệt này.");
+    }
+  }
+
+  /** Sửa tay trong bảng: cập nhật ngay, lưu lịch sử sau 0,6 giây ngừng gõ */
+  const editRow = useCallback((id: string, patch: Partial<Row>) => {
+    const cur = rowsRef.current.find((r) => r.id === id);
+    update(id, patch);
+    if (!cur) return;
+    const next = { ...cur, ...patch };
+    const timers = saveTimers.current;
+    clearTimeout(timers.get(id));
+    timers.set(id, setTimeout(() => persistRef.current(next, null, false), 600));
+  }, [update]);
+  const persistRef = useRef(persist);
+  persistRef.current = persist;
 
   function onPickFolder(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files || []);
@@ -260,13 +382,15 @@ export default function Home() {
     update(row.id, { status: "processing", note: "" });
     if (engine === "tesseract") {
       const t = await readWithTesseract(file);
-      update(row.id, {
+      const patch: Partial<Row> = {
         ...t,
         bank: normalizeBankName(t.bank),
         // Tesseract hay nhầm 3/5, 6/8... nên luôn cần người kiểm tra
         status: "review",
         note: ["Chỉ đọc bằng Tesseract - đối chiếu với ảnh rồi bấm Đã kiểm tra", ...validate(t)].join("; "),
-      });
+      };
+      update(row.id, patch);
+      await persist({ ...row, ...patch } as Row, "Tesseract", true);
       return;
     }
 
@@ -294,7 +418,13 @@ export default function Home() {
       if (diffs.length) issues.push(...diffs);
       else note = "Khớp 2 engine";
     }
-    update(row.id, { ...result, status: issues.length ? "review" : "ok", note: issues.length ? issues.join("; ") : note });
+    const patch: Partial<Row> = {
+      ...result,
+      status: issues.length ? "review" : "ok",
+      note: issues.length ? issues.join("; ") : note,
+    };
+    update(row.id, patch);
+    await persist({ ...row, ...patch } as Row, engine === "both" ? `${aiName} + Tesseract` : aiName, true);
   }
 
   async function run(targets: Row[]) {
@@ -309,7 +439,8 @@ export default function Home() {
     const ready = Boolean(userKey) || serverHasKey(info, provider);
     const engine: Engine = ready ? selectedEngine : "tesseract";
     if (engine !== "tesseract" && !userKey && info?.needPassword && !password) {
-      setMessage(`Nhập mật khẩu truy cập (hoặc nhập API key ${aiName} của bạn) trước khi đọc bằng AI.`);
+      setMessage(`Nhập mật khẩu truy cập hoặc API key ${aiName} của bạn ở tab Cài đặt AI trước khi đọc bằng AI.`);
+      setTab("settings");
       setRunning(false);
       return;
     }
@@ -371,10 +502,37 @@ export default function Home() {
           name: r.name,
           fileName: r.fileName,
           note: noteFor(r),
-          file: r.file ?? undefined,
+          image: r.file ?? history.find((h) => h.fileName === r.fileName)?.thumb,
         })),
         {
           fileName: folderName ? `thong-tin-ngan-hang_${folderName}.xlsx` : "thong-tin-ngan-hang.xlsx",
+          withImages,
+          onProgress: (done, total) => setExporting({ done, total }),
+        },
+      );
+    } catch (err) {
+      setMessage(`Không tạo được file Excel: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setExporting(null);
+    }
+  }
+
+  async function exportHistory(records: HistoryRecord[]) {
+    setExporting({ done: 0, total: records.length });
+    try {
+      await exportToExcel(
+        records.map((r) => ({
+          customerCode: r.customerCode,
+          businessName: r.businessName,
+          bank: r.bank,
+          account: r.account,
+          name: r.name,
+          fileName: r.fileName,
+          note: r.status === "ok" ? (r.note.startsWith("Đã kiểm tra") ? "Đã kiểm tra" : "") : r.note || "Cần kiểm tra",
+          image: r.thumb,
+        })),
+        {
+          fileName: `lich-su-ocr-ngan-hang_${new Date().toISOString().slice(0, 10)}.xlsx`,
           withImages,
           onProgress: (done, total) => setExporting({ done, total }),
         },
@@ -427,197 +585,317 @@ export default function Home() {
         </p>
       </header>
 
-      <section className="panel ai">
-        <span className="field-label">AI đọc ảnh</span>
-        {(Object.keys(AI) as Provider[]).map((p) => (
-          <label key={p} className="radio">
-            <input
-              type="radio"
-              name="provider"
-              value={p}
-              checked={provider === p}
-              disabled={busy}
-              onChange={() => changeAi((prev) => ({ ...prev, provider: p }))}
-            />
-            {AI[p].label}
-          </label>
+      <nav className="tabs" role="tablist">
+        {(
+          [
+            ["read", `Đọc ảnh${stats.total ? ` (${stats.total})` : ""}`],
+            ["history", `Lịch sử (${history.length})`],
+            ["settings", "Cài đặt AI"],
+          ] as [Tab, string][]
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            role="tab"
+            aria-selected={tab === key}
+            className={`tab${tab === key ? " active" : ""}`}
+            onClick={() => setTab(key)}
+          >
+            {label}
+          </button>
         ))}
-        <span className="key-box">
-          <input
-            type={showKey ? "text" : "password"}
-            className="text-input key"
-            placeholder={`API key ${aiName} (${AI[provider].keyHint})`}
-            aria-label={`API key ${aiName}`}
-            autoComplete="off"
-            spellCheck={false}
-            value={ai.keys[provider]}
-            disabled={busy}
-            onChange={(e) => {
-              const v = e.target.value;
-              changeAi((prev) => ({ ...prev, keys: { ...prev.keys, [prev.provider]: v } }));
-            }}
-          />
-          <button type="button" className="btn sm" onClick={() => setShowKey((v) => !v)}>
-            {showKey ? "Ẩn" : "Hiện"}
-          </button>
-        </span>
-        <input
-          className="text-input model"
-          placeholder={`Model: ${server?.defaultModels?.[provider] || AI[provider].model}`}
-          aria-label="Model"
-          spellCheck={false}
-          value={ai.models[provider]}
-          disabled={busy}
-          onChange={(e) => {
-            const v = e.target.value;
-            changeAi((prev) => ({ ...prev, models: { ...prev.models, [prev.provider]: v } }));
-          }}
-        />
-        <a href={AI[provider].keyUrl} target="_blank" rel="noreferrer">
-          Lấy API key {aiName}
-        </a>
-        <span className={`key-status ${aiReady ? "ok" : "missing"}`}>
-          {userKey
-            ? "Dùng key bạn nhập (lưu trên trình duyệt này)"
-            : usingServerKey
-              ? "Dùng key trên máy chủ"
-              : `Chưa có key ${aiName}: chỉ đọc được bằng Tesseract`}
-        </span>
-      </section>
+      </nav>
 
-      <section
-        className={`panel drop${dragOver ? " over" : ""}`}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragOver(true);
-        }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={onDrop}
-      >
-        <label className={`btn primary${busy ? " disabled" : ""}`}>
-          Chọn thư mục ảnh
-          <input
-            type="file"
-            multiple
-            hidden
-            onChange={onPickFolder}
-            disabled={busy}
-            {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
-          />
-        </label>
-        <label className={`btn${busy ? " disabled" : ""}`}>
-          Chọn nhiều ảnh
-          <input type="file" multiple hidden accept=".jpg,.jpeg,.png,image/jpeg,image/png" onChange={onPickFiles} disabled={busy} />
-        </label>
-        <span className="hint">hoặc kéo thả thư mục / ảnh vào đây</span>
-      </section>
-
-      <section className="panel">
-        <label className="field">
-          Chế độ đọc
-          <select value={engineShown} onChange={(e) => setEngine(e.target.value as Engine)} disabled={busy}>
-            <option value="both" disabled={!aiReady}>
-              {aiName} + Tesseract kiểm tra chéo (khuyên dùng)
-            </option>
-            <option value="ai" disabled={!aiReady}>
-              Chỉ {aiName} (nhanh hơn)
-            </option>
-            <option value="tesseract">Chỉ Tesseract (miễn phí, kém chính xác)</option>
-          </select>
-        </label>
-        {server?.needPassword && usingServerKey && engineShown !== "tesseract" && (
-          <input
-            type="password"
-            className="password"
-            placeholder="Mật khẩu truy cập"
-            aria-label="Mật khẩu truy cập"
-            value={password}
-            onChange={(e) => onPasswordChange(e.target.value)}
-            disabled={busy}
-          />
-        )}
-        <span className="spacer" />
-        {!running ? (
-          <>
-            <button
-              className="btn primary"
-              disabled={busy || !pendingCount}
-              onClick={() => run(rowsRef.current.filter((r) => r.status === "pending" || r.status === "error"))}
-            >
-              Bắt đầu đọc
-            </button>
-            <button className="btn" disabled={busy || !realRows.length} onClick={() => run(rowsRef.current)}>
-              Đọc lại tất cả
-            </button>
-          </>
-        ) : (
-          <button className="btn danger" onClick={() => (stopRef.current = true)}>
-            Dừng
-          </button>
-        )}
-        <button className="btn" disabled={busy || !stats.done} onClick={onCopy}>
-          Sao chép bảng
-        </button>
-        <label className="check">
-          <input type="checkbox" checked={withImages} onChange={(e) => setWithImages(e.target.checked)} disabled={busy} />
-          Kèm ảnh
-        </label>
-        <button className="btn primary" disabled={busy || !stats.done} onClick={onExport}>
-          {exporting ? `Đang tạo Excel ${exporting.done}/${exporting.total}…` : "Xuất Excel"}
-        </button>
-      </section>
-
-      <section className="panel summary">
-        <span>
-          {stats.total
-            ? `${folderName ? folderName + " · " : ""}${stats.done}/${stats.total} ảnh đã đọc`
-            : "Ví dụ minh họa: chọn thư mục để bắt đầu"}
-        </span>
-        <span className="pill ok">OK: {stats.ok}</span>
-        <span className="pill review">Cần kiểm tra: {stats.review}</span>
-        <span className="pill error">Lỗi: {stats.error}</span>
-        <span className="spacer" />
-        <label className="check">
-          <input type="checkbox" checked={onlyReview} onChange={(e) => setOnlyReview(e.target.checked)} />
-          Chỉ hiện dòng cần kiểm tra
-        </label>
-        <div className="bar">
-          <div style={{ width: stats.total ? `${(stats.done / stats.total) * 100}%` : 0 }} />
-        </div>
-      </section>
-
+      {historyError && <div className="notice">{historyError}</div>}
       {message && <div className="notice">{message}</div>}
 
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>STT</th>
-              <th>Ảnh</th>
-              <th>Mã số KH</th>
-              <th>Tên CSKD</th>
-              <th>Ngân hàng nhận</th>
-              <th>Tài khoản/thẻ nhận</th>
-              <th>Tên người nhận</th>
-              <th>Trạng thái</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {visible.map((r) => (
-              <RowView
-                key={r.id}
-                row={r}
-                index={indexById.get(r.id)!}
-                running={busy}
-                onUpdate={update}
-                onPreview={setPreview}
-                onReread={reread}
-              />
+      {tab === "settings" && (
+        <>
+          <section className="panel ai">
+            <span className="field-label">AI đọc ảnh</span>
+            {(Object.keys(AI) as Provider[]).map((p) => (
+              <label key={p} className="radio">
+                <input
+                  type="radio"
+                  name="provider"
+                  value={p}
+                  checked={provider === p}
+                  disabled={busy}
+                  onChange={() => changeAi((prev) => ({ ...prev, provider: p }))}
+                />
+                {AI[p].label}
+              </label>
             ))}
-          </tbody>
-        </table>
-      </div>
+            <span className="key-box">
+              <input
+                type={showKey ? "text" : "password"}
+                className="text-input key"
+                placeholder={`API key ${aiName} (${AI[provider].keyHint})`}
+                aria-label={`API key ${aiName}`}
+                autoComplete="off"
+                spellCheck={false}
+                value={ai.keys[provider]}
+                disabled={busy}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  changeAi((prev) => ({ ...prev, keys: { ...prev.keys, [prev.provider]: v } }));
+                }}
+              />
+              <button type="button" className="btn sm" onClick={() => setShowKey((v) => !v)}>
+                {showKey ? "Ẩn" : "Hiện"}
+              </button>
+            </span>
+            <input
+              className="text-input model"
+              placeholder={`Model: ${server?.defaultModels?.[provider] || AI[provider].model}`}
+              aria-label="Model"
+              spellCheck={false}
+              value={ai.models[provider]}
+              disabled={busy}
+              onChange={(e) => {
+                const v = e.target.value;
+                changeAi((prev) => ({ ...prev, models: { ...prev.models, [prev.provider]: v } }));
+              }}
+            />
+            <a href={AI[provider].keyUrl} target="_blank" rel="noreferrer">
+              Lấy API key {aiName}
+            </a>
+            <span className={`key-status ${aiReady ? "ok" : "missing"}`}>
+              {userKey
+                ? "Dùng key bạn nhập (lưu trên trình duyệt này)"
+                : usingServerKey
+                  ? "Dùng key trên máy chủ"
+                  : `Chưa có key ${aiName}: chỉ đọc được bằng Tesseract`}
+            </span>
+          </section>
+          <section className="panel">
+            <span className="field-label">Mật khẩu truy cập</span>
+            {server?.needPassword ? (
+              <>
+                <input
+                  type="password"
+                  className="password"
+                  placeholder="Mật khẩu truy cập"
+                  aria-label="Mật khẩu truy cập"
+                  value={password}
+                  onChange={(e) => onPasswordChange(e.target.value)}
+                  disabled={busy}
+                />
+                <span className="hint">Chỉ cần khi dùng key đặt trên máy chủ (Vercel). Đã nhập key riêng thì bỏ trống.</span>
+              </>
+            ) : (
+              <span className="hint">Máy chủ không đặt mật khẩu (APP_PASSWORD).</span>
+            )}
+          </section>
+          <section className="panel tips">
+            <span className="hint">
+              Key và mật khẩu chỉ lưu trên trình duyệt này. Lịch sử ảnh đã đọc cũng lưu trên trình duyệt này: dùng máy
+              khác hoặc trình duyệt khác sẽ không thấy.
+            </span>
+          </section>
+        </>
+      )}
+
+      {tab === "read" && (
+        <>
+          <section className="panel ai-status">
+            <span>
+              AI: <b>{AI[provider].label}</b>
+            </span>
+            <span className={`key-status ${aiReady ? "ok" : "missing"}`}>
+              {userKey ? "Dùng key bạn nhập" : usingServerKey ? "Dùng key trên máy chủ" : `Chưa có key ${aiName}`}
+            </span>
+            <button className="btn sm" onClick={() => setTab("settings")}>
+              Đổi AI / nhập key
+            </button>
+          </section>
+          <section
+            className={`panel drop${dragOver ? " over" : ""}`}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={onDrop}
+          >
+            <label className={`btn primary${busy ? " disabled" : ""}`}>
+              Chọn thư mục ảnh
+              <input
+                type="file"
+                multiple
+                hidden
+                onChange={onPickFolder}
+                disabled={busy}
+                {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+              />
+            </label>
+            <label className={`btn${busy ? " disabled" : ""}`}>
+              Chọn nhiều ảnh
+              <input type="file" multiple hidden accept=".jpg,.jpeg,.png,image/jpeg,image/png" onChange={onPickFiles} disabled={busy} />
+            </label>
+            <span className="hint">hoặc kéo thả thư mục / ảnh vào đây</span>
+          </section>
+
+          <section className="panel">
+            <label className="field">
+              Chế độ đọc
+              <select
+                value={engineShown}
+                onChange={(e) => {
+                  const v = e.target.value as Engine;
+                  setEngine(v);
+                  try {
+                    localStorage.setItem(ENGINE_KEY, v);
+                  } catch {}
+                }}
+                disabled={busy}
+              >
+                <option value="both" disabled={!aiReady}>
+                  {aiName} + Tesseract kiểm tra chéo (khuyên dùng)
+                </option>
+                <option value="ai" disabled={!aiReady}>
+                  Chỉ {aiName} (nhanh hơn)
+                </option>
+                <option value="tesseract">Chỉ Tesseract (miễn phí, kém chính xác)</option>
+              </select>
+            </label>
+            <span className="spacer" />
+            {!running ? (
+              <>
+                <button
+                  className="btn primary"
+                  disabled={busy || !pendingCount}
+                  onClick={() => run(rowsRef.current.filter((r) => r.status === "pending" || r.status === "error"))}
+                >
+                  Bắt đầu đọc
+                </button>
+                <button className="btn" disabled={busy || !realRows.length} onClick={() => run(rowsRef.current)}>
+                  Đọc lại tất cả
+                </button>
+              </>
+            ) : (
+              <button className="btn danger" onClick={() => (stopRef.current = true)}>
+                Dừng
+              </button>
+            )}
+            <button className="btn" disabled={busy || !stats.done} onClick={onCopy}>
+              Sao chép bảng
+            </button>
+            <label className="check">
+              <input type="checkbox" checked={withImages} onChange={(e) => setWithImages(e.target.checked)} disabled={busy} />
+              Kèm ảnh
+            </label>
+            <button className="btn primary" disabled={busy || !stats.done} onClick={onExport}>
+              {exporting ? `Đang tạo Excel ${exporting.done}/${exporting.total}…` : "Xuất Excel"}
+            </button>
+          </section>
+
+          <section className="panel summary">
+            <span>
+              {stats.total
+                ? `${folderName ? folderName + " · " : ""}${stats.done}/${stats.total} ảnh đã đọc`
+                : "Ví dụ minh họa: chọn thư mục để bắt đầu"}
+            </span>
+            <span className="pill ok">OK: {stats.ok}</span>
+            <span className="pill review">Cần kiểm tra: {stats.review}</span>
+            <span className="pill error">Lỗi: {stats.error}</span>
+            <span className="spacer" />
+            <label className="check">
+              <input type="checkbox" checked={onlyReview} onChange={(e) => setOnlyReview(e.target.checked)} />
+              Chỉ hiện dòng cần kiểm tra
+            </label>
+            <div className="bar">
+              <div style={{ width: stats.total ? `${(stats.done / stats.total) * 100}%` : 0 }} />
+            </div>
+          </section>
+
+
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>STT</th>
+                  <th>Ảnh</th>
+                  <th>Mã số KH</th>
+                  <th>Tên CSKD</th>
+                  <th>Ngân hàng nhận</th>
+                  <th>Tài khoản/thẻ nhận</th>
+                  <th>Tên người nhận</th>
+                  <th>Trạng thái</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {visible.map((r) => (
+                  <RowView
+                    key={r.id}
+                    row={r}
+                    index={indexById.get(r.id)!}
+                    running={busy}
+                    onUpdate={editRow}
+                    onPreview={setPreview}
+                    onReread={reread}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+        </>
+      )}
+
+      {tab === "history" && (
+        <HistoryTab
+          records={history}
+          busy={busy}
+          onDelete={async (names) => {
+            await deleteHistory(names).catch(() => {});
+            setHistory((list) => list.filter((h) => !names.includes(h.fileName)));
+          }}
+          onClear={async () => {
+            await clearHistory().catch(() => {});
+            setHistory([]);
+          }}
+          onExport={exportHistory}
+        />
+      )}
+
+      {dup && (
+        <div className="modal dialog-backdrop" role="dialog" aria-modal="true" aria-labelledby="dup-title">
+          <div className="dialog" onClick={(e) => e.stopPropagation()}>
+            <h2 id="dup-title">
+              {dup.existing.size}/{dup.files.length} ảnh đã đọc trước đây
+            </h2>
+            <p>
+              Các ảnh này trùng tên với ảnh đã có dữ liệu trong lịch sử
+              {(() => {
+                const last = Math.max(...[...dup.existing.values()].map((r) => r.readAt));
+                return ` (lần gần nhất ${fmtTime(last)})`;
+              })()}
+              . Bạn có muốn <b>đọc lại và ghi đè</b> không?
+            </p>
+            <ul className="dup-list">
+              {[...dup.existing.values()].slice(0, 5).map((r) => (
+                <li key={r.fileName}>
+                  {r.fileName} <span className="hint">· {r.account || "chưa có STK"}</span>
+                </li>
+              ))}
+              {dup.existing.size > 5 && <li className="hint">… và {dup.existing.size - 5} ảnh khác</li>}
+            </ul>
+            <div className="dialog-actions">
+              <button className="btn primary" onClick={() => answerDup("skip")} autoFocus>
+                Không, bỏ qua {dup.existing.size} ảnh đã có
+                {dup.files.length > dup.existing.size ? ` (chỉ đọc ${dup.files.length - dup.existing.size} ảnh mới)` : ""}
+              </button>
+              <button className="btn" onClick={() => answerDup("reread")}>
+                Có, đọc lại toàn bộ {dup.files.length} ảnh
+              </button>
+              <button className="btn ghost" onClick={() => answerDup("cancel")}>
+                Hủy
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {preview && (
         <div className="modal" onClick={() => setPreview(null)}>
