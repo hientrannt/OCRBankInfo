@@ -118,16 +118,20 @@ function blobBackend(): Backend {
 
 function fsBackend(dir: string): Backend {
   const file = (p: string) => path.join(dir, p.replace(`${PREFIX}/`, ""));
+  // ETag = băm nội dung (thời gian sửa file không đủ: hai lần ghi trong cùng 1ms có thể trùng)
   const etagOf = async () => {
-    const st = await fs.stat(file(INDEX)).catch(() => null);
-    return st ? `${st.mtimeMs}-${st.size}` : null;
+    const text = await fs.readFile(file(INDEX)).catch(() => null);
+    return text ? createHash("sha256").update(text).digest("hex") : null;
   };
   let lock: Promise<unknown> = Promise.resolve();
   return {
     kind: "fs",
     async readIndex() {
       const text = await fs.readFile(file(INDEX), "utf8").catch(() => null);
-      return { records: text ? JSON.parse(text) : [], etag: await etagOf() };
+      return {
+        records: text ? JSON.parse(text) : [],
+        etag: text ? createHash("sha256").update(text).digest("hex") : null,
+      };
     },
     async writeIndex(records, etag) {
       // Khóa trong tiến trình để so sánh etag rồi ghi là một bước liền
