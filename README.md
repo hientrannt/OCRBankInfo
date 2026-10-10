@@ -10,6 +10,7 @@ và xuất ra file Excel.
 | Ngân hàng nhận | Đọc từ ảnh (tên bị cắt `...` được khôi phục, vd `AGRIBANK - Ngân hàng Nông nghiệp và Phát triển Nông thôn Việt Nam`) |
 | Tài khoản/thẻ nhận | Đọc từ ảnh, lưu dạng chữ (giữ số 0 đầu, không bị `4.7E+12`) |
 | Tên người nhận | Đọc từ ảnh |
+| Ảnh | Ảnh đã đọc, thu nhỏ gọn trong ô (bỏ chọn "Kèm ảnh" nếu không cần) |
 | Tên file, Ghi chú | Để đối chiếu |
 
 ## Đưa lên Vercel (link public)
@@ -49,14 +50,17 @@ lần sau tự cài đặt, build và mở trình duyệt.
 
 ## Sử dụng
 
-1. Bấm **📁 Chọn thư mục** → chọn thư mục chứa ảnh (Chrome / Edge / Firefox).
+1. Bấm **Chọn thư mục ảnh** (hoặc **Chọn nhiều ảnh**, hoặc kéo thả thư mục vào trang). File không phải .jpg/.png
+   (ví dụ ảnh HEIC của iPhone) được bỏ qua và báo số lượng.
 2. Chọn chế độ đọc:
    - **Claude AI + Tesseract kiểm tra chéo (khuyên dùng)**: Claude đọc ảnh, Tesseract đọc độc lập; nếu số tài khoản
      hoặc tên không khớp, dòng được đánh dấu **Cần kiểm tra**.
    - **Chỉ Claude AI**: nhanh hơn.
    - **Chỉ Tesseract**: chạy offline, miễn phí, nhưng hay nhầm số (3↔5, 6↔8) nên mọi dòng đều phải kiểm tra.
-3. Bấm **▶ Bắt đầu đọc**. Bấm vào ảnh nhỏ để phóng to, sửa trực tiếp ô bị sai, bấm **✓** khi đã kiểm tra.
-4. Bấm **⬇ Xuất Excel**.
+3. Bấm **Bắt đầu đọc**. Bấm vào ảnh nhỏ để phóng to, sửa trực tiếp ô bị sai, bấm **Đã kiểm tra** khi đã xem lại.
+   Thư mục nhiều ảnh: khi Claude quá tải hoặc mạng chập chờn, app tự thử lại; bấm **Dừng** rồi **Bắt đầu đọc**
+   để đọc tiếp phần còn lại. Đừng đóng tab khi đang đọc (kết quả chỉ nằm trong trình duyệt).
+4. Bấm **Xuất Excel** (kèm ảnh trong ô) hoặc **Sao chép bảng** để dán vào Excel.
 
 ## Về độ chính xác
 
