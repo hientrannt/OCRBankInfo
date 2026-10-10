@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -46,10 +47,29 @@ Quy tắc:
 - Bỏ qua các biểu tượng (icon) cạnh ô nhập.
 Gọi công cụ save_bank_info với kết quả.`;
 
+/** Khi đặt APP_PASSWORD, chỉ người biết mật khẩu mới dùng được API key (tránh bị người lạ dùng tốn tiền) */
+function checkPassword(req: Request): boolean {
+  const expected = process.env.APP_PASSWORD;
+  if (!expected) return true;
+  const given = Buffer.from(req.headers.get("x-app-password") || "");
+  const want = Buffer.from(expected);
+  return given.length === want.length && timingSafeEqual(given, want);
+}
+
+export async function GET() {
+  return NextResponse.json({
+    hasKey: Boolean(process.env.ANTHROPIC_API_KEY),
+    needPassword: Boolean(process.env.APP_PASSWORD),
+  });
+}
+
 export async function POST(req: Request) {
+  if (!checkPassword(req)) {
+    return NextResponse.json({ error: "Sai mật khẩu truy cập", needPassword: true }, { status: 401 });
+  }
   if (!process.env.ANTHROPIC_API_KEY) {
     return NextResponse.json(
-      { error: "Chưa cấu hình ANTHROPIC_API_KEY trong file .env.local" },
+      { error: "Chưa cấu hình ANTHROPIC_API_KEY (file .env.local hoặc Environment Variables trên Vercel)" },
       { status: 500 },
     );
   }

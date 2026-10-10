@@ -12,7 +12,26 @@ và xuất ra file Excel.
 | Tên người nhận | Đọc từ ảnh |
 | Tên file, Ghi chú | Để đối chiếu |
 
-## Cài đặt & chạy
+## Đưa lên Vercel (link public)
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fhientrannt%2FOCRBankInfo&env=ANTHROPIC_API_KEY,APP_PASSWORD&envDescription=ANTHROPIC_API_KEY%3A%20API%20key%20Claude.%20APP_PASSWORD%3A%20m%E1%BA%ADt%20kh%E1%BA%A9u%20truy%20c%E1%BA%ADp%20%C4%91%E1%BB%83%20ng%C6%B0%E1%BB%9Di%20l%E1%BA%A1%20kh%C3%B4ng%20d%C3%B9ng%20%C4%91%C6%B0%E1%BB%A3c%20API%20key&project-name=ocr-bank-info&repository-name=ocr-bank-info)
+
+Cách 1: bấm nút **Deploy with Vercel** ở trên. Cách 2 (giữ nguyên repo này, tự deploy lại mỗi khi có code mới):
+
+1. Vào https://vercel.com/new, đăng nhập bằng GitHub, chọn **Import** repo `hientrannt/OCRBankInfo`
+   (nếu không thấy repo: bấm *Adjust GitHub App Permissions* và cho Vercel quyền truy cập repo này).
+2. Framework tự nhận là **Next.js**, giữ nguyên các thiết lập build.
+3. Mở **Environment Variables**, thêm:
+   - `ANTHROPIC_API_KEY` = API key Claude (lấy tại https://console.anthropic.com)
+   - `APP_PASSWORD` = một mật khẩu bạn tự đặt (**bắt buộc nên có**: link public ai cũng mở được,
+     không có mật khẩu thì người lạ có thể dùng API key của bạn)
+   - (tuỳ chọn) `OCR_MODEL` = `claude-sonnet-5-5` để rẻ hơn
+4. Bấm **Deploy**. Sau khoảng 1–2 phút bạn có link dạng `https://ocr-bank-info.vercel.app`.
+5. Mở link, nhập mật khẩu ở ô **Mật khẩu truy cập** (trình duyệt sẽ nhớ), chọn thư mục ảnh và đọc như bình thường.
+
+Đổi biến môi trường sau này: Vercel → Project → Settings → Environment Variables, rồi **Redeploy**.
+
+## Cài đặt & chạy trên máy
 
 Yêu cầu Node.js 20+.
 
@@ -55,6 +74,7 @@ Chỉ cần rà các dòng **Cần kiểm tra** (tích "Chỉ hiện dòng cần
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | API key Claude |
 | `OCR_MODEL` | `claude-opus-5-5` | Đổi sang `claude-sonnet-5-5` để rẻ hơn |
+| `APP_PASSWORD` | (trống) | Mật khẩu truy cập; nên đặt khi đưa lên Internet |
 
 Ảnh chỉ được gửi tới API Claude để đọc, không lưu trên máy chủ.
 
