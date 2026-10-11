@@ -12,6 +12,16 @@ const LABELS = {
   name: /ten\s*nguoi\s*nhan|ten\s*nguoi\s*thu\s*huong|chu\s*tai\s*khoan/,
 } as const;
 
+/** Mục khác của màn hình chuyển tiền: dừng ghép dòng khi gặp */
+const STOP = /so\s*tien|noi\s*dung|phi\s*chuyen|tiep\s*tuc|xac\s*nhan|luu\s*(mau|nguoi)|ghi\s*chu|so\s*du|chuyen\s*nhanh/;
+
+/**
+ * Tesseract đôi khi chèn khoảng trắng vào giữa mã viết hoa ngay trước dấu gạch: "TGT T-HKD" -> "TGTT-HKD"
+ */
+function fixStraySpaces(s: string): string {
+  return s.replace(/\s+/g, " ").replace(/\b([A-Z]{2,}) ([A-Z])(?=-)/g, "$1$2").trim();
+}
+
 /**
  * Tách thông tin từ văn bản OCR thô (Tesseract). Giá trị nằm cùng dòng
  * sau nhãn hoặc ở dòng kế tiếp.
@@ -23,35 +33,43 @@ export function parseOcrText(text: string): BankFields {
     .filter(Boolean);
   const plain = lines.map((l) => stripDiacritics(l).toLowerCase());
 
-  const valueAfter = (label: RegExp, exclude?: RegExp): string => {
+  /** Các dòng giá trị sau nhãn: phần còn lại trên cùng dòng, rồi các dòng kế tiếp tới nhãn/mục khác */
+  const linesAfter = (label: RegExp, exclude?: RegExp): string[] => {
     for (let i = 0; i < plain.length; i++) {
       if (exclude && exclude.test(plain[i])) continue;
       const m = plain[i].match(label);
       if (!m) continue;
-      // Phần còn lại trên cùng dòng (sau nhãn)
+      const out: string[] = [];
       const rest = lines[i].slice((m.index ?? 0) + m[0].length).replace(/^[\s:\-/|]+/, "").trim();
-      if (rest.length > 2) return rest;
-      const next: string[] = [];
+      if (rest.length > 2) out.push(rest);
       for (let j = i + 1; j < lines.length; j++) {
-        const isLabel = Object.values(LABELS).some((re) => re.test(plain[j]));
+        const isLabel = Object.values(LABELS).some((re) => re.test(plain[j])) || STOP.test(plain[j]);
         if (isLabel) break;
-        if (lines[j].length > 1) next.push(lines[j]);
+        if (lines[j].length > 1) out.push(lines[j]);
       }
-      if (!next.length) continue;
-      // Logo/icon có thể tạo ra dòng rác ngắn: ưu tiên dòng có nhiều chữ/số nhất
-      return next.reduce((best, l) => (score(l) > score(best) ? l : best));
+      if (out.length) return out;
     }
-    return "";
+    return [];
   };
 
-  const bank = valueAfter(LABELS.bank).replace(/[^\p{L}\p{N}\s\-.…()&]/gu, "").trim();
-  const accountLine = valueAfter(LABELS.account, LABELS.bank);
+  // Ngân hàng: logo/icon có thể tạo dòng rác ngắn phía trước -> lấy dòng có nhiều chữ/số nhất
+  const bankLines = linesAfter(LABELS.bank);
+  const bank = (bankLines.length ? bankLines.reduce((best, l) => (score(l) > score(best) ? l : best)) : "")
+    .replace(/[^\p{L}\p{N}\s\-.…()&]/gu, "")
+    .trim();
+
+  const accountLine = linesAfter(LABELS.account, LABELS.bank)[0] ?? "";
   // Lấy cụm số dài nhất (cho phép nhóm số cách nhau, bỏ ký tự nhiễu lẻ từ icon)
   const account =
     (accountLine.match(/\d{3,}(?:[ .-]\d{3,})*/g) || [])
       .map(digitsOnly)
       .sort((a, b) => b.length - a.length)[0] || digitsOnly(accountLine);
-  const name = valueAfter(LABELS.name, /ngan\s*hang/).replace(/[^\p{L}\p{N}\s.&-]/gu, "").trim();
+
+  // Tên người nhận có thể xuống 2-3 dòng (vd "VND-TGTT-HKD NHA THUOC BANG" / "NHI") -> ghép lại
+  const nameLines = linesAfter(LABELS.name, /ngan\s*hang/)
+    .map((l) => l.replace(/[^\p{L}\p{N}\s.&-]/gu, "").trim())
+    .filter((l) => score(l) >= 2);
+  const name = fixStraySpaces(nameLines.slice(0, 3).join(" "));
 
   return { bank, account, name };
 }

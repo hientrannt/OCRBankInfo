@@ -48,3 +48,39 @@ test("parseOcrText giữ STK có nhóm số cách nhau", () => {
   const t = parseOcrText("Tài khoản/thẻ nhận\n0071 0001 23456 2\nTên người nhận\nNGUYEN VAN A");
   assert.equal(t.account, "0071000123456");
 });
+
+test("parseOcrText ghép tên người nhận xuống 2 dòng và sửa khoảng trắng lạc", () => {
+  // Văn bản Tesseract thật của ảnh TECHCOMBANK (tên xuống dòng "NHI")
+  const text = `Thông tin người nhận. (=) Mẫu chuyển tiền
+Ngân hàng nhận
+<> JR
+
+TECHCOMBANK - Ngan han...
+
+Tài khoản/thẻ nhận -
+
+19050622266014
+
+Tên người nhận
+
+VND-TGT T-HKD NHA THUOC BANG
+
+NHI
+`;
+  const r = parseOcrText(text);
+  assert.equal(r.name, "VND-TGTT-HKD NHA THUOC BANG NHI");
+  assert.equal(r.account, "19050622266014");
+  assert.equal(normalizeBankName(r.bank), "TECHCOMBANK - Ngân hàng TMCP Kỹ thương Việt Nam");
+});
+
+test("parseOcrText dừng ghép tên khi gặp mục khác (Số tiền, Nội dung)", () => {
+  const r = parseOcrText("Tên người nhận\nNGUYEN VAN A\nSố tiền\n1.000.000 VND\nNội dung\nTHANH TOAN");
+  assert.equal(r.name, "NGUYEN VAN A");
+});
+
+test("parseFileName với tên file thật trên ổ mạng", () => {
+  assert.deepEqual(parseFileName("0583.00228_HỘ KINH DOANH NHÀ THUỐC ÁNH TRANG 2.jpg"), {
+    customerCode: "0583/00228",
+    businessName: "HỘ KINH DOANH NHÀ THUỐC ÁNH TRANG 2",
+  });
+});

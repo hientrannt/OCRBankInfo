@@ -32,13 +32,18 @@ Hãy đọc chính xác từng ký tự của 3 trường: "Ngân hàng nhận",
 Quy tắc:
 - Không suy đoán, không sửa chính tả, không thêm dấu tiếng Việt nếu ảnh không có dấu.
 - Số tài khoản: đếm kỹ từng chữ số, đọc lại lần 2 để kiểm tra trước khi trả lời.
+- Tên người nhận (và tên ngân hàng) có thể bị xuống 2-3 dòng trong cùng một ô: phải đọc và ghép ĐỦ TẤT CẢ các dòng
+  theo thứ tự, ngăn cách bằng một dấu cách. Ví dụ ô hiển thị "VND-TGTT-HKD NHA THUOC BANG" rồi dòng dưới "NHI"
+  thì kết quả là "VND-TGTT-HKD NHA THUOC BANG NHI". Không được bỏ dòng cuối.
+- Giữ nguyên dấu gạch nối và chữ viết tắt, không thêm/bớt khoảng trắng bên trong (vd "TGTT" không phải "TGT T").
 - Bỏ qua các biểu tượng (icon) cạnh ô nhập.`;
 
 const FIELDS = {
   bank_raw: "Dòng 'Ngân hàng nhận' chép NGUYÊN VĂN như trong ảnh, kể cả dấu '...' nếu bị cắt.",
   bank_code: "Mã/tên viết tắt ngân hàng (vd AGRIBANK, VIETCOMBANK, BIDV). Rỗng nếu không thấy.",
   account_number: "Số 'Tài khoản/thẻ nhận', chỉ gồm chữ số (giữ nguyên số 0 ở đầu), không có khoảng trắng.",
-  recipient_name: "'Tên người nhận' chép NGUYÊN VĂN, giữ nguyên dấu/không dấu và chữ hoa/thường như trong ảnh.",
+  recipient_name:
+    "'Tên người nhận' chép NGUYÊN VĂN, giữ nguyên dấu/không dấu và chữ hoa/thường; nếu tên xuống nhiều dòng thì ghép đủ tất cả các dòng.",
   note: "Ghi chú ngắn nếu uncertain = true hoặc ảnh không đúng dạng.",
 } as const;
 
