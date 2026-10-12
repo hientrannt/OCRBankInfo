@@ -43,6 +43,9 @@ export interface Backend {
   getThumbBatch(batch: string): Promise<Record<string, string> | null>;
   deleteThumbBatches(batches: string[]): Promise<void>;
   clearAll(): Promise<void>;
+  /** Tài liệu dùng chung khác (vd bảng HSKH), lưu tách khỏi lịch sử để "Xóa toàn bộ lịch sử" không xóa theo */
+  getDoc(name: string): Promise<string | null>;
+  putDoc(name: string, text: string): Promise<void>;
 }
 
 export const recordId = (fileName: string) =>
@@ -51,6 +54,7 @@ export const recordId = (fileName: string) =>
 const PREFIX = "ocr-history";
 const INDEX = `${PREFIX}/index.json`;
 const thumbPath = (batch: string) => `${PREFIX}/thumbs/${batch}.json`;
+const docPath = (name: string) => `ocr-docs/${name.replace(/[^a-z0-9._-]/gi, "_")}`;
 
 async function streamToText(stream: ReadableStream<Uint8Array>): Promise<string> {
   return new Response(stream).text();
@@ -113,6 +117,21 @@ function blobBackend(): Backend {
         cursor = page.hasMore ? page.cursor : undefined;
       } while (cursor);
     },
+    async getDoc(name) {
+      const { get } = await lib();
+      const res = await get(docPath(name), { ...opts, useCache: false });
+      if (!res || res.statusCode !== 200) return null;
+      return streamToText(res.stream);
+    },
+    async putDoc(name, text) {
+      const { put } = await lib();
+      await put(docPath(name), text, {
+        ...opts,
+        contentType: "application/json",
+        addRandomSuffix: false,
+        allowOverwrite: true,
+      });
+    },
   };
 }
 
@@ -158,6 +177,13 @@ function fsBackend(dir: string): Backend {
     },
     async clearAll() {
       await fs.rm(dir, { recursive: true, force: true });
+    },
+    async getDoc(name) {
+      return fs.readFile(path.join(`${dir}-docs`, docPath(name).replace("ocr-docs/", "")), "utf8").catch(() => null);
+    },
+    async putDoc(name, text) {
+      await fs.mkdir(`${dir}-docs`, { recursive: true });
+      await fs.writeFile(path.join(`${dir}-docs`, docPath(name).replace("ocr-docs/", "")), text);
     },
   };
 }

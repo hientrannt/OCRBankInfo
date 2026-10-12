@@ -61,3 +61,13 @@ test("xóa bản ghi thì dọn luôn lô ảnh không còn dùng; dữ liệu b
   assert.equal(await upsertRecords(b, [{ fileName: "" } as IncomingRecord, rec("y.png", { status: "hack" as "ok" })]), 1);
   assert.equal((await b.readIndex()).records[0].status, "review");
 });
+
+test("tài liệu dùng chung (HSKH) không bị xóa khi xóa toàn bộ lịch sử", async () => {
+  const { b } = backend();
+  await b.putDoc("hskh.json", '{"count":1}');
+  await upsertRecords(b, [rec("z.png", { thumb: "AAAA" })]);
+  await b.clearAll();
+  assert.equal((await b.readIndex()).records.length, 0);
+  assert.equal(await b.getDoc("hskh.json"), '{"count":1}');
+  assert.equal(await b.getDoc("khong-co.json"), null);
+});

@@ -46,6 +46,7 @@ export default function HistoryTab({
   busy,
   storeLabel,
   warnings,
+  staffOf,
   loadThumb,
   onDelete,
   onClear,
@@ -58,6 +59,7 @@ export default function HistoryTab({
   busy: boolean;
   storeLabel: string;
   warnings: Map<string, string[]>;
+  staffOf: (customerCode: string) => { msnv: string; nvbh: string } | undefined;
   loadThumb: (r: HistoryRecord) => Promise<Blob | undefined>;
   onDelete: (fileNames: string[]) => void;
   onClear: () => void;
@@ -178,6 +180,7 @@ export default function HistoryTab({
                 <th>Ảnh</th>
                 <th>Mã số KH</th>
                 <th>Tên CSKD</th>
+                <th>MSNV · NVBH</th>
                 <th>Ngân hàng nhận</th>
                 <th>Tài khoản/thẻ nhận</th>
                 <th>Tên người nhận</th>
@@ -188,7 +191,7 @@ export default function HistoryTab({
             </thead>
             <tbody>
               {shown.map((r) => (
-                <tr key={r.fileName} className={warnings.has(r.fileName) ? "error" : r.status}>
+                <tr key={r.fileName} className={warnings.has(r.fileName) ? "dup" : r.status}>
                   <td>
                     <Thumb
                       record={r}
@@ -199,6 +202,16 @@ export default function HistoryTab({
                   </td>
                   <td>{r.customerCode}</td>
                   <td className="cell-wide">{r.businessName}</td>
+                  <td className="staff">
+                    {staffOf(r.customerCode) ? (
+                      <>
+                        <b className="mono">{staffOf(r.customerCode)!.msnv}</b>
+                        <div className="note">{staffOf(r.customerCode)!.nvbh}</div>
+                      </>
+                    ) : (
+                      <span className="note">–</span>
+                    )}
+                  </td>
                   <td className="cell-wide">{r.bank}</td>
                   <td className="mono">{r.account}</td>
                   <td>{r.name}</td>

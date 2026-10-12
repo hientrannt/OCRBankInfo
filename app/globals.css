@@ -129,3 +129,12 @@ td.w-acc input { font-family: var(--font-num); min-width: 150px; letter-spacing:
 .note.warn { color: var(--err); font-weight: 500; }
 .pill + .pill { margin-left: 4px; }
 .hint.full { flex-basis: 100%; }
+
+/* Dòng trùng số tài khoản: tô đỏ rõ */
+tr.dup td { background: color-mix(in srgb, var(--err) 22%, var(--surface)); }
+tr.dup td:first-child { box-shadow: inset 4px 0 0 var(--err); }
+td.staff { min-width: 130px; }
+.hskh-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 800px) { .hskh-grid { grid-template-columns: 1fr; } }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td { background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }

@@ -13,12 +13,14 @@ import { makeBackup, parseBackup } from "@/lib/backup";
 import { importExcel } from "@/lib/excelImport";
 import { findDuplicateAccounts } from "@/lib/duplicates";
 import HistoryTab from "@/components/HistoryTab";
+import HskhTab from "@/components/HskhTab";
+import { loadLocalHskh, lookupHskh, saveLocalHskh, parseHskh, type HskhData } from "@/lib/hskh";
 import { exportToExcel } from "@/lib/excel";
 import { FatalOcrError, postOcr } from "@/lib/ocrClient";
 
 type Engine = "both" | "ai" | "tesseract";
 type Provider = "claude" | "gemini";
-type Tab = "read" | "history" | "settings";
+type Tab = "read" | "history" | "hskh" | "settings";
 
 /** Hỏi người dùng khi thư mục mới chọn có ảnh trùng tên với ảnh đã đọc trước đây */
 interface DupPrompt {
@@ -81,7 +83,7 @@ const TESSERACT_WORKERS = 2;
 const PASSWORD_KEY = "ocr-app-password";
 const ENGINE_KEY = "ocr-engine";
 const STORE_KEY = "ocr-history-store";
-const HEAD = ["STT", "Mã số KH", "Tên CSKD", "Ngân hàng nhận", "Tài khoản/thẻ nhận", "Tên người nhận", "Tên file", "Ghi chú"];
+const HEAD = ["STT", "Mã số KH", "Tên CSKD", "MSNV", "Tên NVBH", "Ngân hàng nhận", "Tài khoản/thẻ nhận", "Tên người nhận", "Tên file", "Ghi chú"];
 
 const EXAMPLE: Row = {
   id: "example",
@@ -154,6 +156,7 @@ export default function Home() {
     [storeKind],
   );
   const historyRef = useRef<HistoryRecord[]>([]);
+  const [hskh, setHskh] = useState<HskhData | null>(null);
   const [dup, setDup] = useState<DupPrompt | null>(null);
   const saveTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const [withImages, setWithImages] = useState(true);
@@ -180,6 +183,42 @@ export default function Home() {
   }, []);
 
   // Nạp lịch sử từ nơi lưu đang chọn (trình duyệt hoặc máy chủ); đổi nơi lưu / mật khẩu thì nạp lại
+  // HSKH: lấy bản trên trình duyệt; khi dùng chung thì lấy bản máy chủ nếu mới hơn
+  useEffect(() => {
+    const local = loadLocalHskh();
+    setHskh(local);
+    if (store.kind !== "shared") return;
+    fetch("/api/hskh", { headers: { "x-app-password": passwordRef.current } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((remote: HskhData | null) => {
+        if (remote?.entries && (!local || remote.importedAt > local.importedAt)) {
+          setHskh(remote);
+          saveLocalHskh(remote);
+        }
+      })
+      .catch(() => {});
+  }, [store, historyLoaded]);
+
+  async function onUploadHskh(file: File) {
+    try {
+      const data = await parseHskh(await file.arrayBuffer(), file.name);
+      setHskh(data);
+      saveLocalHskh(data);
+      let where = "trình duyệt này";
+      if (store.kind === "shared") {
+        const res = await fetch("/api/hskh", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", "x-app-password": password },
+          body: JSON.stringify(data),
+        });
+        where = res.ok ? "máy chủ (dùng chung)" : "trình duyệt này (chưa lưu được lên máy chủ)";
+      }
+      setMessage(`Đã nạp HSKH "${file.name}": ${data.count} khách hàng, lưu trên ${where}.`);
+    } catch (err) {
+      setMessage(`Không đọc được file HSKH: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
   const reloadHistory = useCallback(async () => {
     setHistoryLoaded(false);
     try {
@@ -572,6 +611,17 @@ export default function Home() {
     ? rows.filter((r) => r.status === "review" || r.status === "error" || rowWarnings.has(r.fileName))
     : rows;
 
+  function staffLabel(code: string) {
+    if (!hskh || !code) return "";
+    const e = lookupHskh(hskh, code);
+    return e ? `${e.msnv}|${e.nvbh}` : "?";
+  }
+  const hskhUnmatched = useMemo(() => {
+    if (!hskh) return [];
+    const codes = new Set([...rows.filter((r) => r.status !== "example").map((r) => r.customerCode), ...history.map((h) => h.customerCode)]);
+    return [...codes].filter((c) => c && !lookupHskh(hskh, c)).sort();
+  }, [hskh, rows, history]);
+
   function noteFor(r: Row) {
     const base = r.status === "ok" ? (r.note.startsWith("Đã kiểm tra") ? "Đã kiểm tra" : "") : r.note || STATUS_LABEL[r.status];
     return [...(rowWarnings.get(r.fileName) ?? []), base].filter(Boolean).join("; ");
@@ -585,6 +635,9 @@ export default function Home() {
         list.map((r) => ({
           customerCode: r.customerCode,
           businessName: r.businessName,
+          msnv: lookupHskh(hskh, r.customerCode)?.msnv ?? "",
+          nvbh: lookupHskh(hskh, r.customerCode)?.nvbh ?? "",
+          duplicate: rowWarnings.has(r.fileName),
           bank: r.bank,
           account: r.account,
           name: r.name,
@@ -615,6 +668,9 @@ export default function Home() {
         records.map((r) => ({
           customerCode: r.customerCode,
           businessName: r.businessName,
+          msnv: lookupHskh(hskh, r.customerCode)?.msnv ?? "",
+          nvbh: lookupHskh(hskh, r.customerCode)?.nvbh ?? "",
+          duplicate: historyWarnings.has(r.fileName),
           bank: r.bank,
           account: r.account,
           name: r.name,
@@ -749,6 +805,8 @@ export default function Home() {
         i + 1,
         r.customerCode ? `'${r.customerCode}` : "",
         r.businessName,
+        lookupHskh(hskh, r.customerCode)?.msnv ? `'${lookupHskh(hskh, r.customerCode)!.msnv}` : "",
+        lookupHskh(hskh, r.customerCode)?.nvbh ?? "",
         r.bank,
         r.account ? `'${r.account}` : "",
         r.name,
@@ -787,6 +845,7 @@ export default function Home() {
           [
             ["read", `Đọc ảnh${stats.total ? ` (${stats.total})` : ""}`],
             ["history", `Lịch sử (${history.length})`],
+            ["hskh", `HSKH${hskh ? ` (${hskh.count})` : ""}`],
             ["settings", "Cài đặt AI"],
           ] as [Tab, string][]
         ).map(([key, label]) => (
@@ -1061,6 +1120,7 @@ export default function Home() {
                   <th>Ảnh</th>
                   <th>Mã số KH</th>
                   <th>Tên CSKD</th>
+                  <th>MSNV · NVBH</th>
                   <th>Ngân hàng nhận</th>
                   <th>Tài khoản/thẻ nhận</th>
                   <th>Tên người nhận</th>
@@ -1076,6 +1136,7 @@ export default function Home() {
                     index={indexById.get(r.id)!}
                     running={busy}
                     warning={rowWarnings.get(r.fileName)?.join("\n") ?? ""}
+                    staff={staffLabel(r.customerCode)}
                     onUpdate={editRow}
                     onPreview={setPreview}
                     onReread={reread}
@@ -1088,12 +1149,27 @@ export default function Home() {
         </>
       )}
 
+      {tab === "hskh" && (
+        <HskhTab
+          hskh={hskh}
+          busy={busy}
+          storeLabel={storeKind === "shared" ? "máy chủ (dùng chung)" : "trình duyệt này"}
+          unmatched={hskhUnmatched}
+          onUpload={onUploadHskh}
+          onClear={() => {
+            setHskh(null);
+            saveLocalHskh(null);
+          }}
+        />
+      )}
+
       {tab === "history" && (
         <HistoryTab
           records={history}
           busy={busy || !historyLoaded}
           storeLabel={storeKind === "shared" ? "Máy chủ (dùng chung)" : "Trình duyệt này"}
           warnings={historyWarnings}
+          staffOf={(code) => lookupHskh(hskh, code)}
           loadThumb={store.loadThumb}
           onDelete={async (names) => {
             try {
@@ -1175,6 +1251,7 @@ const RowView = memo(function RowView({
   index,
   running,
   warning,
+  staff,
   onUpdate,
   onPreview,
   onReread,
@@ -1184,6 +1261,8 @@ const RowView = memo(function RowView({
   running: boolean;
   /** Cảnh báo trùng STK, mỗi dòng một cảnh báo (chuỗi để memo so sánh được) */
   warning: string;
+  /** "MSNV|Tên NVBH" dò từ HSKH ("" = chưa có HSKH, "?" = không có trong HSKH) */
+  staff: string;
   onUpdate: (id: string, patch: Partial<Row>) => void;
   onPreview: (r: Row) => void;
   onReread: (r: Row) => void;
@@ -1200,7 +1279,7 @@ const RowView = memo(function RowView({
     </td>
   );
   return (
-    <tr className={warning && r.status !== "error" ? "error" : r.status}>
+    <tr className={warning ? "dup" : r.status}>
       <td>{example ? "–" : index}</td>
       <td>
         {r.url ? (
@@ -1219,6 +1298,18 @@ const RowView = memo(function RowView({
       </td>
       {input("customerCode")}
       {input("businessName", "w-name")}
+      <td className="staff">
+        {staff === "?" ? (
+          <span className="note warn">Không có trong HSKH</span>
+        ) : staff ? (
+          <>
+            <b className="mono">{staff.split("|")[0]}</b>
+            <div className="note">{staff.split("|")[1]}</div>
+          </>
+        ) : (
+          <span className="note">–</span>
+        )}
+      </td>
       {input("bank", "w-bank")}
       {input("account", "w-acc")}
       {input("name", "w-name")}

@@ -86,11 +86,22 @@ Tab **Cài đặt AI** → **Nơi lưu lịch sử** → **Máy chủ (dùng chu
 - Bấm **Chuyển lịch sử từ trình duyệt lên máy chủ** để đưa lịch sử cũ lên.
 - Chạy trên máy riêng (không phải Vercel): lịch sử dùng chung lưu ở thư mục `.data/ocr-history`.
 
+## HSKH: dò MSNV nhân viên bán hàng
+
+Tab **HSKH** → **Tải lên file HSKH** (Excel hồ sơ khách hàng). App lấy cột **Số** (mã KH, vd `0573/00028`),
+**Nhân Viên Bán** (MSNV) và **Tên NVBH**, rồi tự điền cột **MSNV · NVBH** cho từng ảnh theo Mã số KH (trong bảng,
+tab Lịch sử và file Excel xuất ra). Mỗi lần HSKH thay đổi, tải file mới lên để thay thế.
+
+- File được đọc ngay trên trình duyệt, chỉ giữ 3 cột trên; SĐT, CCCD… không được lưu hay gửi đi.
+- Đang dùng lịch sử trên máy chủ thì bảng HSKH cũng được lưu lên máy chủ, máy khác tự nhận.
+- Tab HSKH liệt kê các mã KH đang đọc mà HSKH không có, và thống kê số KH theo từng nhân viên.
+
 ## Cảnh báo trùng số tài khoản
 
 App tự đánh dấu **Trùng STK** khi cùng một số tài khoản thuộc nhiều mã KH khác nhau, hoặc một mã KH có nhiều
-số tài khoản khác nhau (so cả với lịch sử). Cảnh báo hiện trong bảng, trong Excel (cột Ghi chú) và có bộ lọc
-"Chỉ dòng trùng STK" ở tab Lịch sử.
+số tài khoản khác nhau (so cả với lịch sử). Ghi chú nêu cụ thể các MSKH bị trùng (vd "Trùng STK với MSKH
+0573/00002, 0573/00015"). Các dòng trùng được **tô đỏ** trong bảng, tab Lịch sử và cả file Excel xuất ra; tab
+Lịch sử có bộ lọc "Chỉ dòng trùng STK".
 
 ## Chọn AI và nhập API key ngay trên giao diện
 

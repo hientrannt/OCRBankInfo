@@ -19,8 +19,8 @@ test("phát hiện trùng STK giữa các mã KH và mã KH có nhiều STK", ()
     r("e.png", "0573/00005", "3333333333"),
     r("e2.png", "0573/00005", "3333333333"), // cùng mã KH, cùng STK -> không cảnh báo
   ]);
-  assert.match(w.get("a.png")![0], /Trùng STK với 0573\/00002 NHA THUOC B/);
-  assert.match(w.get("b.png")![0], /0573\/00001/);
+  assert.equal(w.get("a.png")![0], "Trùng STK với MSKH 0573/00002");
+  assert.equal(w.get("b.png")![0], "Trùng STK với MSKH 0573/00001");
   assert.match(w.get("c.png")![0], /Mã KH có 2 STK khác nhau \(2222222222\)/);
   assert.equal(w.has("e.png"), false);
   assert.equal(w.has("e2.png"), false);
@@ -60,4 +60,10 @@ test("nhập file Excel do app xuất (kèm ảnh trong ô, STK dạng số ho�
   assert.equal(records[1].status, "review");
   assert.equal(records[1].thumb, undefined);
   assert.equal(records[0].engine, "Nhập từ Excel");
+});
+
+test("trùng STK liệt kê đủ các MSKH (tối đa 15)", () => {
+  const items = Array.from({ length: 18 }, (_, i) => r(`f${i}.png`, `0573/${String(i).padStart(5, "0")}`, "999888777"));
+  const msg = findDuplicateAccounts(items).get("f0.png")![0];
+  assert.match(msg, /^Trùng STK với MSKH 0573\/00001, 0573\/00002, .*0573\/00015 và 2 mã khác$/);
 });
