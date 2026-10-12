@@ -9,6 +9,11 @@ export interface ExportRow {
   name: string;
   fileName: string;
   note: string;
+  /** MSNV và tên nhân viên bán hàng (dò từ HSKH) */
+  msnv?: string;
+  nvbh?: string;
+  /** Dòng trùng số tài khoản: tô đỏ cả dòng */
+  duplicate?: boolean;
   /** File gốc, ảnh thu nhỏ đã lưu, hoặc hàm tải ảnh khi cần (lịch sử trên máy chủ) */
   image?: Blob | (() => Promise<Blob | undefined>);
 }
@@ -38,6 +43,8 @@ export async function exportToExcel(rows: ExportRow[], opts: ExportOptions = {})
     ...(withImages ? [{ header: "Ảnh", key: "image", width: IMAGE_COL_WIDTH }] : []),
     { header: "Mã số KH", key: "customerCode", width: 14 },
     { header: "Tên CSKD", key: "businessName", width: 40 },
+    { header: "MSNV", key: "msnv", width: 10 },
+    { header: "Tên NVBH", key: "nvbh", width: 24 },
     { header: "Ngân hàng nhận", key: "bank", width: 50 },
     { header: "Tài khoản/thẻ nhận", key: "account", width: 22 },
     { header: "Tên người nhận", key: "name", width: 32 },
@@ -46,13 +53,14 @@ export async function exportToExcel(rows: ExportRow[], opts: ExportOptions = {})
   ];
   ws.columns = columns;
   rows.forEach((r, i) => {
-    const { image: _image, ...data } = r;
-    ws.addRow({ stt: i + 1, ...data });
+    const { image: _image, duplicate: _dup, ...data } = r;
+    ws.addRow({ stt: i + 1, ...data, msnv: data.msnv ?? "", nvbh: data.nvbh ?? "" });
   });
 
   // Số tài khoản & mã KH lưu dạng chữ để không mất số 0 ở đầu / không bị dạng 4.7E+12
   ws.getColumn("account").numFmt = "@";
   ws.getColumn("customerCode").numFmt = "@";
+  ws.getColumn("msnv").numFmt = "@";
 
   const header = ws.getRow(1);
   header.font = { bold: true, color: { argb: "FFFFFFFF" } };
@@ -61,12 +69,18 @@ export async function exportToExcel(rows: ExportRow[], opts: ExportOptions = {})
   header.eachCell((c) => {
     c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0A6B4B" } };
   });
-  ws.eachRow((row, n) =>
+  ws.eachRow((row, n) => {
+    // Dòng trùng số tài khoản: nền đỏ nhạt, chữ đỏ đậm
+    const dup = n > 1 && rows[n - 2]?.duplicate;
     row.eachCell({ includeEmpty: true }, (c) => {
       c.border = { top: { style: "thin" }, left: { style: "thin" }, bottom: { style: "thin" }, right: { style: "thin" } };
       if (n > 1) c.alignment = { vertical: "middle", wrapText: true };
-    }),
-  );
+      if (dup) {
+        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFC7CE" } };
+        c.font = { color: { argb: "FF9C0006" }, bold: c.col === row.getCell("note").col };
+      }
+    });
+  });
   ws.views = [{ state: "frozen", ySplit: 1 }];
   ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: columns.length } };
 

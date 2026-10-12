@@ -24,14 +24,20 @@ export function findDuplicateAccounts(items: DupInput[]): Map<string, string[]> 
   }
   const out = new Map<string, string[]>();
   const add = (f: string, msg: string) => out.set(f, [...(out.get(f) ?? []), msg]);
-  const label = (x: DupInput) => [x.customerCode, x.businessName].filter(Boolean).join(" ") || x.fileName;
 
   for (const group of byAccount.values()) {
     for (const it of group) {
-      const others = group.filter((o) => o.fileName !== it.fileName && looseKey(o.customerCode) !== looseKey(it.customerCode));
-      if (others.length) {
-        const shown = others.slice(0, 2).map(label).join("; ");
-        add(it.fileName, `Trùng STK với ${shown}${others.length > 2 ? ` và ${others.length - 2} CSKD khác` : ""}`);
+      // Liệt kê cụ thể các MSKH khác đang dùng cùng STK (tối đa 15 mã, còn lại ghi số lượng)
+      const codes = [
+        ...new Set(
+          group
+            .filter((o) => o.fileName !== it.fileName && looseKey(o.customerCode) !== looseKey(it.customerCode))
+            .map((o) => o.customerCode || o.fileName),
+        ),
+      ];
+      if (codes.length) {
+        const shown = codes.slice(0, 15).join(", ");
+        add(it.fileName, `Trùng STK với MSKH ${shown}${codes.length > 15 ? ` và ${codes.length - 15} mã khác` : ""}`);
       }
     }
   }
