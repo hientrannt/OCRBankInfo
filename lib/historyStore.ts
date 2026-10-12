@@ -48,7 +48,8 @@ export class SharedHistoryError extends Error {
 // ~30 ảnh thu nhỏ (~1,3MB) mỗi lần gửi: dưới xa giới hạn 4,5MB/request của Vercel
 const BATCH_SIZE = 30;
 const CONCURRENCY = 3;
-const FLUSH_DELAY = 2000;
+// Ảnh đọc xong được gửi gần như ngay: chỉ chờ 0,3 giây để gom các ảnh xong cùng lúc vào một lần gửi
+const FLUSH_DELAY = 300;
 /** Danh sách tên file đã đọc nhưng cloud chưa xác nhận đã lưu (giữ qua lần tải lại trang) */
 export const OUTBOX_KEY = "ocr-cloud-outbox";
 const RETRY_DELAYS = [5_000, 15_000, 30_000, 60_000, 120_000];
@@ -120,7 +121,13 @@ export function createSharedStore(
   let timer: ReturnType<typeof setTimeout> | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let retryCount = 0;
-  let chain: Promise<void> = Promise.resolve();
+  // Ảnh đang được gửi (không gửi trùng; bản sửa mới hơn đợi lần gửi này xong rồi gửi tiếp)
+  const inflight = new Set<string>();
+  let active = 0;
+  // Lần gửi gần nhất lỗi: tạm dừng, chờ tự gửi lại (retry) hoặc flush()
+  let paused = false;
+  let idleWaiters: (() => void)[] = [];
+  let loading: Promise<void> | null = null;
   let disposed = false;
   let state: SyncStatus = { pending: 0, sending: false, error: "", code: "" };
 
@@ -183,80 +190,109 @@ export function createSharedStore(
     }, delay);
   }
 
-  async function flushNow() {
-    // Phần còn lại từ lần mở app trước (đã ghi vào trình duyệt, chưa lên cloud)
+  const sendable = () => [...queue.values()].filter((r) => !inflight.has(r.fileName));
+  function checkIdle() {
+    if (active === 0 && (paused || disposed || sendable().length === 0)) {
+      const waiters = idleWaiters;
+      idleWaiters = [];
+      waiters.forEach((resolve) => resolve());
+    }
+  }
+  const idle = () =>
+    new Promise<void>((resolve) => {
+      idleWaiters.push(resolve);
+      checkIdle();
+    });
+
+  /**
+   * Gửi liên tục: còn chỗ (tối đa `concurrency` lần gửi cùng lúc) là lấy ngay các ảnh đang chờ để gửi,
+   * không đợi lần gửi trước xong. Ảnh đọc xong lên cloud sau vài giây, không dồn lại đẩy một loạt.
+   */
+  function pump() {
+    while (!paused && !disposed && active < concurrency) {
+      const chunk = sendable().slice(0, BATCH_SIZE);
+      if (!chunk.length) break;
+      chunk.forEach((r) => inflight.add(r.fileName));
+      active++;
+      emit({ sending: true });
+      sendChunk(chunk)
+        .then(
+          () => {
+            // Đã lưu xong: bỏ khỏi hàng chờ, trừ khi người dùng vừa sửa lại (bản mới hơn vẫn phải gửi)
+            const sent = new Set<string>();
+            for (const r of chunk) {
+              if (queue.get(r.fileName) === r) {
+                queue.delete(r.fileName);
+                sent.add(r.fileName);
+              }
+              if (r.thumb) thumbs.set(r.fileName, Promise.resolve(r.thumb));
+            }
+            writeOutbox(readOutbox().filter((n) => !sent.has(n)));
+            retryCount = 0;
+            emit(paused ? {} : { error: "", code: "" });
+          },
+          (err) => {
+            const code = err instanceof SharedHistoryError ? err.code : "error";
+            paused = true;
+            emit({ error: err instanceof Error ? err.message : String(err), code });
+            opts.onError?.(err instanceof Error ? err : new Error(String(err)));
+            scheduleRetry(code);
+          },
+        )
+        .finally(() => {
+          chunk.forEach((r) => inflight.delete(r.fileName));
+          active--;
+          pump();
+          if (!active) emit({ sending: false });
+          checkIdle();
+        });
+    }
+    checkIdle();
+  }
+
+  /** Phần còn lại từ lần mở app trước (đã ghi vào trình duyệt, chưa lên cloud) */
+  async function loadLeftover() {
     const leftover = readOutbox().filter((n) => !queue.has(n));
-    if (leftover.length && mirror) {
-      const found = await mirror.find(leftover).catch(() => new Map<string, HistoryRecord>());
-      for (const n of leftover) {
-        const rec = found.get(historyKey(n));
-        if (rec) queue.set(n, rec);
-      }
-      // Tên không còn bản ghi trên trình duyệt thì không gửi được: bỏ khỏi hàng chờ
-      const lost = leftover.filter((n) => !found.has(historyKey(n)));
-      if (lost.length) writeOutbox(readOutbox().filter((n) => !lost.includes(n)));
+    if (!leftover.length || !mirror) return;
+    const found = await mirror.find(leftover).catch(() => new Map<string, HistoryRecord>());
+    for (const n of leftover) {
+      const rec = found.get(historyKey(n));
+      if (rec && !queue.has(n)) queue.set(n, rec);
     }
-    if (!queue.size) {
-      emit({ sending: false, error: "", code: "" });
-      return;
-    }
-    const pending = [...queue.values()];
-    emit({ sending: true });
-    const chunks: HistoryRecord[][] = [];
-    for (let i = 0; i < pending.length; i += BATCH_SIZE) chunks.push(pending.slice(i, i + BATCH_SIZE));
-    // Gửi song song vài lô: mỗi lần ghi lên cloud có độ trễ cố định ~2 giây, chạy song song nhanh hơn nhiều
-    let failure: unknown = null;
-    let next = 0;
-    const worker = async () => {
-      while (!failure && next < chunks.length) {
-        const chunk = chunks[next++];
-        try {
-          await sendChunk(chunk);
-        } catch (err) {
-          failure ??= err;
-          return;
-        }
-        // Đã lưu xong: bỏ khỏi hàng chờ, trừ khi người dùng vừa sửa lại (bản mới hơn vẫn phải gửi)
-        const sent = new Set<string>();
-        for (const r of chunk) {
-          if (queue.get(r.fileName) === r) {
-            queue.delete(r.fileName);
-            sent.add(r.fileName);
-          }
-          if (r.thumb) thumbs.set(r.fileName, Promise.resolve(r.thumb));
-        }
-        writeOutbox(readOutbox().filter((n) => !sent.has(n)));
-        emit({});
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(concurrency, chunks.length) }, worker));
-    if (failure) {
-      const err = failure;
-      const code = err instanceof SharedHistoryError ? err.code : "error";
-      emit({ sending: false, error: err instanceof Error ? err.message : String(err), code });
-      opts.onError?.(err instanceof Error ? err : new Error(String(err)));
-      scheduleRetry(code);
-      return;
-    }
-    retryCount = 0;
-    emit({ sending: false, error: "", code: "" });
-    if (queue.size) scheduleFlush(); // có bản sửa mới trong lúc gửi
+    // Tên không còn bản ghi trên trình duyệt thì không gửi được: bỏ khỏi hàng chờ
+    const lost = leftover.filter((n) => !found.has(historyKey(n)));
+    if (lost.length) writeOutbox(readOutbox().filter((n) => !lost.includes(n)));
   }
 
-  function scheduleFlush() {
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => void flush(), flushDelay);
+  function schedulePump() {
+    if (timer || paused || disposed) return; // không dời lại: ảnh xong liên tục vẫn được gửi đều
+    timer = setTimeout(() => {
+      timer = null;
+      pump();
+    }, flushDelay);
   }
 
-  /** Gửi ngay các ảnh đang chờ; không ném lỗi (xem status() / onStatus) */
+  /** Gửi ngay mọi ảnh đang chờ (kể cả lần trước lỗi); xong khi hết ảnh chờ hoặc gặp lỗi. Không ném lỗi. */
   function flush(): Promise<void> {
     if (timer) clearTimeout(timer);
     timer = null;
     if (retryTimer) clearTimeout(retryTimer);
     retryTimer = null;
-    chain = chain.then(flushNow).catch(() => {});
-    return chain;
+    paused = false;
+    loading ??= loadLeftover().finally(() => (loading = null));
+    return loading
+      .then(() => {
+        pump();
+        return idle();
+      })
+      .then(() => {
+        if (!paused) emit({ sending: active > 0, error: "", code: "" });
+      });
   }
+
+  const waitNotSending = async (names: Set<string>) => {
+    while ([...names].some((n) => inflight.has(n))) await new Promise((r) => setTimeout(r, 50));
+  };
 
   // Báo số ảnh còn chờ từ lần trước ngay khi mở app
   queueMicrotask(() => emit({}));
@@ -279,9 +315,8 @@ export function createSharedStore(
       }
       writeOutbox([...readOutbox(), ...records.map((r) => r.fileName)]);
       emit({});
-      // 2) Gửi lên cloud
-      if (queue.size >= BATCH_SIZE * concurrency) void flush();
-      else scheduleFlush();
+      // 2) Gửi lên cloud ngay
+      schedulePump();
     },
     async remove(input) {
       const fileNames = input.map(historyKey);
@@ -291,7 +326,7 @@ export function createSharedStore(
         thumbs.delete(n);
       });
       writeOutbox(readOutbox().filter((n) => !names.has(n)));
-      await chain;
+      await waitNotSending(names); // tránh lần gửi đang chạy ghi lại ảnh vừa xóa
       await call("DELETE", "/api/history", { fileNames });
       await mirror?.remove(fileNames).catch(() => {});
       emit({});
@@ -299,7 +334,7 @@ export function createSharedStore(
     async clear() {
       queue.clear();
       writeOutbox([]);
-      await chain;
+      await idle();
       thumbs.clear();
       await call("DELETE", "/api/history", { all: true });
       await mirror?.clear().catch(() => {});
@@ -327,6 +362,7 @@ export function createSharedStore(
     status: () => state,
     dispose() {
       disposed = true;
+      checkIdle();
       if (timer) clearTimeout(timer);
       if (retryTimer) clearTimeout(retryTimer);
     },

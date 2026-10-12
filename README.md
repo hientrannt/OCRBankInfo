@@ -98,8 +98,10 @@ dữ liệu.
   **Đưa N ảnh chỉ có trên máy này lên cloud** nếu muốn.
 - HSKH tải lên được lưu lên cloud; máy nào có HSKH mới hơn bản trên cloud thì tự đưa lên.
 - Muốn chỉ lưu trên một máy: tab **Cài đặt AI** → Nơi lưu lịch sử → **Chỉ trình duyệt này**.
-- Tốc độ: máy chủ chạy ở Singapore (`vercel.json` → `sin1`, cùng vùng với kho Blob, gần Việt Nam). App gom 30 ảnh
-  mỗi lần ghi và gửi song song 3 lô; ~90 ảnh lên cloud trong khoảng 6-7 giây. Gói miễn phí của Vercel Blob giới hạn
+- **Đọc xong ảnh nào lên cloud ngay ảnh đó** (trong lúc vẫn đang đọc các ảnh khác), không dồn lại đẩy một loạt.
+  Tối đa 3 lần gửi chạy song song; các ảnh xong cùng lúc được gom chung một lần gửi (tối đa 30 ảnh).
+- Tốc độ: máy chủ chạy ở Singapore (`vercel.json` → `sin1`, cùng vùng với kho Blob, gần Việt Nam);
+  ~90 ảnh lên cloud trong khoảng 6-7 giây. Gói miễn phí của Vercel Blob giới hạn
   số lượt ghi mỗi tháng, gom lô cũng giúp tiết kiệm lượt ghi.
 - Chạy trên máy riêng (không phải Vercel): dữ liệu "cloud" lưu ở thư mục `.data/ocr-history`.
 
