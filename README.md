@@ -76,15 +76,18 @@ dùng máy khác/trình duyệt khác hoặc xóa dữ liệu trình duyệt s�
 - **Nhập từ file Excel cũ**: đọc file Excel do app này xuất ra (cần cột "Tên file"; ảnh trong ô cũng được lấy).
   Ảnh có trong file này sẽ được bỏ qua khi đọc thư mục lần sau.
 
-## Lịch sử dùng chung trên máy chủ
+## Lưu trên cloud: máy nào cũng thấy
 
-Tab **Cài đặt AI** → **Nơi lưu lịch sử** → **Máy chủ (dùng chung)**: nhiều máy / nhiều người cùng thấy một lịch sử.
+Mặc định **Lịch sử** và **HSKH** được lưu trên cloud (Vercel Blob, riêng tư): mở web ở máy tính nào cũng thấy cùng
+dữ liệu.
 
-- Dữ liệu lưu trong **Vercel Blob (riêng tư)**, store `ocr-bank-history` (vùng Singapore) đã kết nối với project.
-  Gói miễn phí có giới hạn số lượt ghi mỗi tháng; app gom 25 ảnh/lần ghi để tiết kiệm.
-- **Bắt buộc đặt `APP_PASSWORD`** trên Vercel (dữ liệu có số tài khoản). Ai có mật khẩu đều xem/sửa được lịch sử.
-- Bấm **Chuyển lịch sử từ trình duyệt lên máy chủ** để đưa lịch sử cũ lên.
-- Chạy trên máy riêng (không phải Vercel): lịch sử dùng chung lưu ở thư mục `.data/ocr-history`.
+- Lần đầu mở web trên một máy, app hiện ô **Dữ liệu chung trên cloud** ở đầu trang: nhập mật khẩu truy cập
+  (`APP_PASSWORD`) một lần, trình duyệt sẽ nhớ.
+- Máy đó đang có lịch sử / HSKH lưu riêng trên trình duyệt thì app **tự đưa lên cloud** (chỉ phần cloud chưa có,
+  không ghi đè). HSKH trên máy mới hơn bản trên cloud cũng được đưa lên.
+- Muốn chỉ lưu trên một máy: tab **Cài đặt AI** → Nơi lưu lịch sử → **Chỉ trình duyệt này**.
+- Gói miễn phí của Vercel Blob giới hạn số lượt ghi mỗi tháng; app gom 25 ảnh/lần ghi để tiết kiệm.
+- Chạy trên máy riêng (không phải Vercel): dữ liệu "cloud" lưu ở thư mục `.data/ocr-history`.
 
 ## HSKH: dò MSNV nhân viên bán hàng
 
