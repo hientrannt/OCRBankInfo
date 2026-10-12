@@ -96,6 +96,16 @@ tab Lịch sử và file Excel xuất ra). Mỗi lần HSKH thay đổi, tải f
 - Đang dùng lịch sử trên máy chủ thì bảng HSKH cũng được lưu lên máy chủ, máy khác tự nhận.
 - Tab HSKH liệt kê các mã KH đang đọc mà HSKH không có, và thống kê số KH theo từng nhân viên.
 
+## Kiểm tra số tài khoản kỹ
+
+- **Đọc STK 2 lần (AI)** (bật sẵn, ở tab Đọc ảnh): mỗi ảnh được AI đọc thêm một lần độc lập chỉ tập trung số tài
+  khoản và tên. Hai lần lệch nhau → **Cần kiểm tra**, ghi rõ số đọc được ở lần 2. Tốn gấp đôi lượt gọi AI.
+- **Đối chiếu với HSKH** (khi đã tải HSKH): so STK đọc được với cột "Số Tài Khoản Khách hàng":
+  - lệch 1-2 chữ số → tô **cam**, "Nghi đọc nhầm" (rất có thể AI/Tesseract đọc sai một vài số);
+  - khác hẳn → ghi chú "Khác STK trong HSKH … đổi tài khoản?" (khách dùng tài khoản mới);
+  - Excel có thêm cột **STK trong HSKH** và **Đối chiếu HSKH**.
+- Tên người nhận, tên ngân hàng và số tài khoản bị **xuống dòng** đều được ghép đủ các dòng.
+
 ## Cảnh báo trùng số tài khoản
 
 App tự đánh dấu **Trùng STK** khi cùng một số tài khoản thuộc nhiều mã KH khác nhau, hoặc một mã KH có nhiều

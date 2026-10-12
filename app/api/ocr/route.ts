@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { checkPassword } from "@/lib/auth";
 import {
   DEFAULT_MODELS,
+  PROMPT,
+  PROMPT_VERIFY,
   ProviderError,
   extractWithClaude,
   extractWithGemini,
@@ -28,7 +30,7 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
-  let body: { image?: string; mediaType?: string; provider?: string; model?: string };
+  let body: { image?: string; mediaType?: string; provider?: string; model?: string; mode?: string };
   try {
     body = await req.json();
   } catch {
@@ -60,12 +62,14 @@ export async function POST(req: Request) {
     }
   }
   const model = (body.model || "").trim() || DEFAULT_MODELS[provider];
+  // mode "verify": lần đọc thứ 2 chỉ để đối chiếu số tài khoản và tên
+  const prompt = body.mode === "verify" ? PROMPT_VERIFY : PROMPT;
 
   try {
     const result =
       provider === "gemini"
-        ? await extractWithGemini(body.image, mediaType, apiKey, model)
-        : await extractWithClaude(body.image, mediaType, apiKey, model);
+        ? await extractWithGemini(body.image, mediaType, apiKey, model, fetch, prompt)
+        : await extractWithClaude(body.image, mediaType, apiKey, model, prompt);
     return NextResponse.json(result);
   } catch (err) {
     if (err instanceof ProviderError) {

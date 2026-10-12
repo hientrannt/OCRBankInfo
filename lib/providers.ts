@@ -38,6 +38,13 @@ Quy tắc:
 - Giữ nguyên dấu gạch nối và chữ viết tắt, không thêm/bớt khoảng trắng bên trong (vd "TGTT" không phải "TGT T").
 - Bỏ qua các biểu tượng (icon) cạnh ô nhập.`;
 
+/** Lần đọc thứ 2 (đối chiếu): chỉ tập trung số tài khoản và tên, độc lập với lần 1 */
+export const PROMPT_VERIFY = `Kiểm tra độc lập ảnh chụp màn hình chuyển tiền này.
+1. Ô "Tài khoản/thẻ nhận": chép lại từng chữ số từ trái sang phải, đếm tổng số chữ số rồi đọc lại lần nữa cho chắc.
+   Chú ý phân biệt kỹ các số dễ nhầm: 3/5/8, 1/7, 0/6/9. Nếu số xuống dòng thì ghép đủ.
+2. Ô "Tên người nhận": chép NGUYÊN VĂN, nếu tên xuống 2-3 dòng thì ghép đủ tất cả các dòng.
+Chỉ cần điền account_number và recipient_name; bank_raw và bank_code để trống. Đặt uncertain = true nếu có chữ số nào không chắc.`;
+
 const FIELDS = {
   bank_raw: "Dòng 'Ngân hàng nhận' chép NGUYÊN VĂN như trong ảnh, kể cả dấu '...' nếu bị cắt.",
   bank_code: "Mã/tên viết tắt ngân hàng (vd AGRIBANK, VIETCOMBANK, BIDV). Rỗng nếu không thấy.",
@@ -60,7 +67,7 @@ export function normalizeResult(input: Record<string, unknown>): OcrResult {
 
 const UNCERTAIN = "true nếu có bất kỳ ký tự nào bị mờ, bị che, hoặc không chắc chắn.";
 
-export async function extractWithClaude(image: string, mediaType: string, apiKey: string, model: string) {
+export async function extractWithClaude(image: string, mediaType: string, apiKey: string, model: string, prompt = PROMPT) {
   const tool: Anthropic.Tool = {
     name: "save_bank_info",
     description: "Lưu thông tin người nhận chuyển khoản đọc được từ ảnh chụp màn hình.",
@@ -88,7 +95,7 @@ export async function extractWithClaude(image: string, mediaType: string, apiKey
               type: "image",
               source: { type: "base64", media_type: mediaType as "image/png" | "image/jpeg", data: image },
             },
-            { type: "text", text: `${PROMPT}\nGọi công cụ save_bank_info với kết quả.` },
+            { type: "text", text: `${prompt}\nGọi công cụ save_bank_info với kết quả.` },
           ],
         },
       ],
@@ -114,6 +121,7 @@ export async function extractWithGemini(
   apiKey: string,
   model: string,
   fetchImpl: typeof fetch = fetch,
+  prompt = PROMPT,
 ) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
   let res: Response;
@@ -125,7 +133,7 @@ export async function extractWithGemini(
         contents: [
           {
             role: "user",
-            parts: [{ inline_data: { mime_type: mediaType, data: image } }, { text: PROMPT }],
+            parts: [{ inline_data: { mime_type: mediaType, data: image } }, { text: prompt }],
           },
         ],
         generationConfig: {

@@ -14,7 +14,15 @@ import { importExcel } from "@/lib/excelImport";
 import { findDuplicateAccounts } from "@/lib/duplicates";
 import HistoryTab from "@/components/HistoryTab";
 import HskhTab from "@/components/HskhTab";
-import { loadLocalHskh, lookupHskh, saveLocalHskh, parseHskh, type HskhData } from "@/lib/hskh";
+import {
+  accountCheckText,
+  checkAccount,
+  loadLocalHskh,
+  lookupHskh,
+  parseHskh,
+  saveLocalHskh,
+  type HskhData,
+} from "@/lib/hskh";
 import { exportToExcel } from "@/lib/excel";
 import { FatalOcrError, postOcr } from "@/lib/ocrClient";
 
@@ -83,6 +91,7 @@ const TESSERACT_WORKERS = 2;
 const PASSWORD_KEY = "ocr-app-password";
 const ENGINE_KEY = "ocr-engine";
 const STORE_KEY = "ocr-history-store";
+const VERIFY_KEY = "ocr-verify-twice";
 const HEAD = ["STT", "Mã số KH", "Tên CSKD", "MSNV", "Tên NVBH", "Ngân hàng nhận", "Tài khoản/thẻ nhận", "Tên người nhận", "Tên file", "Ghi chú"];
 
 const EXAMPLE: Row = {
@@ -160,6 +169,8 @@ export default function Home() {
   const [dup, setDup] = useState<DupPrompt | null>(null);
   const saveTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const [withImages, setWithImages] = useState(true);
+  // AI đọc số tài khoản 2 lần độc lập để bắt lỗi đọc nhầm
+  const [verifyTwice, setVerifyTwice] = useState(true);
   const [exporting, setExporting] = useState<{ done: number; total: number } | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const stopRef = useRef(false);
@@ -172,6 +183,7 @@ export default function Home() {
       setPassword(localStorage.getItem(PASSWORD_KEY) || "");
       const savedEngine = localStorage.getItem(ENGINE_KEY);
       if (savedEngine === "both" || savedEngine === "ai" || savedEngine === "tesseract") setEngine(savedEngine);
+      if (localStorage.getItem(VERIFY_KEY) === "0") setVerifyTwice(false);
       const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
       if (saved) setAi({ ...DEFAULT_SETTINGS, ...saved, keys: { ...DEFAULT_SETTINGS.keys, ...saved.keys }, models: { ...DEFAULT_SETTINGS.models, ...saved.models } });
       if (localStorage.getItem(STORE_KEY) === "shared") setStoreKind("shared");
@@ -507,13 +519,13 @@ export default function Home() {
       return;
     }
 
-    const [c, t] = await Promise.all([
-      fileToBase64ForApi(file).then((payload) =>
-        postOcr(
-          { ...payload, provider, model: ai.models[provider].trim() || undefined },
-          { password, apiKey: userKey || undefined, shouldStop: () => stopRef.current },
-        ),
-      ),
+    const payload = await fileToBase64ForApi(file);
+    const callOpts = { password, apiKey: userKey || undefined, shouldStop: () => stopRef.current };
+    const model = ai.models[provider].trim() || undefined;
+    const [c, v, t] = await Promise.all([
+      postOcr({ ...payload, provider, model }, callOpts),
+      // Lần đọc thứ 2 độc lập, chỉ tập trung STK và tên (lỗi lần 2 không làm hỏng kết quả lần 1)
+      verifyTwice ? postOcr({ ...payload, provider, model, mode: "verify" }, callOpts).catch(() => null) : Promise.resolve(null),
       engine === "both" ? readWithTesseract(file).catch(() => null) : Promise.resolve(null),
     ]);
     const result: BankFields = {
@@ -523,6 +535,18 @@ export default function Home() {
     };
     const issues = validate(result);
     if (c.uncertain) issues.push(c.note ? `${aiName} không chắc chắn: ${c.note}` : `${aiName} không chắc chắn`);
+    const notes: string[] = [];
+    if (verifyTwice) {
+      if (!v) issues.push("Không đọc được lần 2 để đối chiếu STK");
+      else {
+        const acc2 = digitsOnly(String(v.account_number ?? ""));
+        const name2 = String(v.recipient_name ?? "").replace(/\s+/g, " ").trim();
+        if (acc2 !== result.account) issues.push(`2 lần đọc STK khác nhau: lần 2 đọc ${acc2 || "(trống)"}`);
+        if (looseKey(name2) !== looseKey(result.name)) issues.push(`2 lần đọc tên khác nhau: lần 2 đọc "${name2 || "(trống)"}"`);
+        if (v.uncertain) issues.push("Lần 2: AI không chắc số tài khoản");
+        if (acc2 === result.account && looseKey(name2) === looseKey(result.name)) notes.push("2 lần đọc STK khớp");
+      }
+    }
     let note = "";
     if (t) {
       const diffs: string[] = [];
@@ -531,10 +555,11 @@ export default function Home() {
       if (diffs.length) issues.push(...diffs);
       else note = "Khớp 2 engine";
     }
+    if (note) notes.push(note);
     const patch: Partial<Row> = {
       ...result,
       status: issues.length ? "review" : "ok",
-      note: issues.length ? issues.join("; ") : note,
+      note: issues.length ? issues.join("; ") : notes.join("; "),
     };
     update(row.id, patch);
     await persist({ ...row, ...patch } as Row, engine === "both" ? `${aiName} + Tesseract` : aiName, true);
@@ -588,13 +613,19 @@ export default function Home() {
     rows.forEach((r) => {
       if (r.status === "example") return;
       s.total++;
-      if (r.status === "ok" || r.status === "review" || r.status === "error") s.done++;
-      if (r.status === "ok") s.ok++;
-      if (r.status === "review") s.review++;
-      if (r.status === "error") s.error++;
+      // STK gần giống HSKH (nghi đọc nhầm) chưa bấm "Đã kiểm tra" thì tính là Cần kiểm tra
+      const near =
+        r.status === "ok" &&
+        !r.note.startsWith("Đã kiểm tra") &&
+        checkAccount(lookupHskh(hskh, r.customerCode), r.account).kind === "near";
+      const st = near ? "review" : r.status;
+      if (st === "ok" || st === "review" || st === "error") s.done++;
+      if (st === "ok") s.ok++;
+      if (st === "review") s.review++;
+      if (st === "error") s.error++;
     });
     return s;
-  }, [rows]);
+  }, [rows, hskh]);
 
   const indexById = useMemo(() => new Map(rows.map((r, i) => [r.id, i + 1])), [rows]);
 
@@ -608,8 +639,20 @@ export default function Home() {
   const dupRowCount = rows.filter((r) => rowWarnings.has(r.fileName)).length;
 
   const visible = onlyReview
-    ? rows.filter((r) => r.status === "review" || r.status === "error" || rowWarnings.has(r.fileName))
+    ? rows.filter(
+        (r) =>
+          r.status === "review" ||
+          r.status === "error" ||
+          rowWarnings.has(r.fileName) ||
+          checkAccount(lookupHskh(hskh, r.customerCode), r.account).kind === "near",
+      )
     : rows;
+
+  /** Đối chiếu STK với HSKH: "near" (lệch 1-2 số, nghi đọc nhầm) / "different" / "match" */
+  function hskhCheck(r: { customerCode: string; account: string }) {
+    return checkAccount(lookupHskh(hskh, r.customerCode), r.account);
+  }
+  const nearCount = rows.filter((r) => r.status !== "example" && hskhCheck(r).kind === "near").length;
 
   function staffLabel(code: string) {
     if (!hskh || !code) return "";
@@ -623,8 +666,11 @@ export default function Home() {
   }, [hskh, rows, history]);
 
   function noteFor(r: Row) {
+    const hc = hskhCheck(r);
     const base = r.status === "ok" ? (r.note.startsWith("Đã kiểm tra") ? "Đã kiểm tra" : "") : r.note || STATUS_LABEL[r.status];
-    return [...(rowWarnings.get(r.fileName) ?? []), base].filter(Boolean).join("; ");
+    return [...(rowWarnings.get(r.fileName) ?? []), hc.kind === "near" || hc.kind === "different" ? accountCheckText(hc) : "", base]
+      .filter(Boolean)
+      .join("; ");
   }
 
   async function onExport() {
@@ -637,6 +683,9 @@ export default function Home() {
           businessName: r.businessName,
           msnv: lookupHskh(hskh, r.customerCode)?.msnv ?? "",
           nvbh: lookupHskh(hskh, r.customerCode)?.nvbh ?? "",
+          hskhAccount: lookupHskh(hskh, r.customerCode)?.account ?? "",
+          hskhCheck: accountCheckText(hskhCheck(r)),
+          suspicious: hskhCheck(r).kind === "near",
           duplicate: rowWarnings.has(r.fileName),
           bank: r.bank,
           account: r.account,
@@ -670,6 +719,9 @@ export default function Home() {
           businessName: r.businessName,
           msnv: lookupHskh(hskh, r.customerCode)?.msnv ?? "",
           nvbh: lookupHskh(hskh, r.customerCode)?.nvbh ?? "",
+          hskhAccount: lookupHskh(hskh, r.customerCode)?.account ?? "",
+          hskhCheck: accountCheckText(hskhCheck(r)),
+          suspicious: hskhCheck(r).kind === "near",
           duplicate: historyWarnings.has(r.fileName),
           bank: r.bank,
           account: r.account,
@@ -1082,6 +1134,22 @@ export default function Home() {
             <button className="btn" disabled={busy || !stats.done} onClick={onCopy}>
               Sao chép bảng
             </button>
+            {engineShown !== "tesseract" && (
+              <label className="check" title="AI đọc số tài khoản và tên 2 lần độc lập; khác nhau thì báo Cần kiểm tra">
+                <input
+                  type="checkbox"
+                  checked={verifyTwice}
+                  disabled={busy}
+                  onChange={(e) => {
+                    setVerifyTwice(e.target.checked);
+                    try {
+                      localStorage.setItem(VERIFY_KEY, e.target.checked ? "1" : "0");
+                    } catch {}
+                  }}
+                />
+                Đọc STK 2 lần
+              </label>
+            )}
             <label className="check">
               <input type="checkbox" checked={withImages} onChange={(e) => setWithImages(e.target.checked)} disabled={busy} />
               Kèm ảnh
@@ -1101,6 +1169,7 @@ export default function Home() {
             <span className="pill review">Cần kiểm tra: {stats.review}</span>
             <span className="pill error">Lỗi: {stats.error}</span>
             {dupRowCount > 0 && <span className="pill error">Trùng STK: {dupRowCount}</span>}
+            {nearCount > 0 && <span className="pill review">Nghi đọc nhầm (so HSKH): {nearCount}</span>}
             <span className="spacer" />
             <label className="check">
               <input type="checkbox" checked={onlyReview} onChange={(e) => setOnlyReview(e.target.checked)} />
@@ -1137,6 +1206,10 @@ export default function Home() {
                     running={busy}
                     warning={rowWarnings.get(r.fileName)?.join("\n") ?? ""}
                     staff={staffLabel(r.customerCode)}
+                    check={(() => {
+                      const c = hskhCheck(r);
+                      return c.kind === "none" ? "" : `${c.kind}|${accountCheckText(c)}`;
+                    })()}
                     onUpdate={editRow}
                     onPreview={setPreview}
                     onReread={reread}
@@ -1252,6 +1325,7 @@ const RowView = memo(function RowView({
   running,
   warning,
   staff,
+  check,
   onUpdate,
   onPreview,
   onReread,
@@ -1263,11 +1337,17 @@ const RowView = memo(function RowView({
   warning: string;
   /** "MSNV|Tên NVBH" dò từ HSKH ("" = chưa có HSKH, "?" = không có trong HSKH) */
   staff: string;
+  /** Đối chiếu STK với HSKH: "kind|nội dung" */
+  check: string;
   onUpdate: (id: string, patch: Partial<Row>) => void;
   onPreview: (r: Row) => void;
   onReread: (r: Row) => void;
 }) {
   const example = r.status === "example";
+  const checked = r.note.startsWith("Đã kiểm tra");
+  const near = check.startsWith("near|") && !checked;
+  // Nghi đọc nhầm (so HSKH) mà chưa kiểm tra thì hiện là Cần kiểm tra
+  const shownStatus: Status = r.status === "ok" && near ? "review" : r.status;
   const input = (key: "customerCode" | "businessName" | "bank" | "account" | "name", cls = "") => (
     <td className={cls}>
       <input
@@ -1279,7 +1359,7 @@ const RowView = memo(function RowView({
     </td>
   );
   return (
-    <tr className={warning ? "dup" : r.status}>
+    <tr className={warning ? "dup" : near ? "near" : r.status}>
       <td>{example ? "–" : index}</td>
       <td>
         {r.url ? (
@@ -1314,8 +1394,14 @@ const RowView = memo(function RowView({
       {input("account", "w-acc")}
       {input("name", "w-name")}
       <td>
-        <span className={`pill ${r.status}`}>{STATUS_LABEL[r.status]}</span>
+        <span className={`pill ${shownStatus}`}>{STATUS_LABEL[shownStatus]}</span>
         {warning && <span className="pill error">Trùng STK</span>}
+        {near && <span className="pill review">Nghi đọc nhầm</span>}
+        {check && (
+          <div className={`note ${check.startsWith("near|") ? "warn-orange" : check.startsWith("match|") ? "ok-text" : "info"}`}>
+            {check.split("|")[1]}
+          </div>
+        )}
         {warning &&
           warning.split("\n").map((w) => (
             <div key={w} className="note warn">
@@ -1325,7 +1411,7 @@ const RowView = memo(function RowView({
         {r.note && <div className="note">{r.note}</div>}
       </td>
       <td className="acts">
-        {!example && r.status === "review" && (
+        {!example && shownStatus === "review" && (
           <button
             className="btn sm"
             onClick={() => onUpdate(r.id, { status: "ok", note: r.note ? `Đã kiểm tra · ${r.note}` : "Đã kiểm tra" })}

@@ -41,7 +41,7 @@ export default function HskhTab({
   }, [list]);
   const filtered = useMemo(() => {
     const q = looseKey(query);
-    return q ? list.filter((e) => looseKey(`${e.code} ${e.msnv} ${e.nvbh}`).includes(q)) : list;
+    return q ? list.filter((e) => looseKey(`${e.code} ${e.msnv} ${e.nvbh} ${e.account ?? ""}`).includes(q)) : list;
   }, [list, query]);
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const current = Math.min(page, pages - 1);
@@ -85,9 +85,10 @@ export default function HskhTab({
 
       <section className="panel tips">
         <span className="hint">
-          App lấy cột <b>Số</b> (mã KH, vd 0573/00028), <b>Nhân Viên Bán</b> (MSNV) và <b>Tên NVBH</b>. File được đọc
-          ngay trên trình duyệt, chỉ giữ 3 cột này; số điện thoại, CCCD… không được lưu hay gửi đi. Mỗi lần HSKH thay đổi,
-          tải file mới lên để dò cho đúng.
+          App lấy cột <b>Số</b> (mã KH, vd 0573/00028), <b>Nhân Viên Bán</b> (MSNV), <b>Tên NVBH</b> và{" "}
+          <b>Số Tài Khoản Khách hàng</b> / <b>Tên Chủ TK</b> / <b>Tên Ngân hàng</b> (để đối chiếu STK đọc từ ảnh: lệch 1-2
+          chữ số thì báo nghi đọc nhầm). File được đọc ngay trên trình duyệt; số điện thoại, CCCD, địa chỉ… không được lưu
+          hay gửi đi. Mỗi lần HSKH thay đổi, tải file mới lên để dò cho đúng.
         </span>
       </section>
 
@@ -121,6 +122,7 @@ export default function HskhTab({
                     <th>Mã số KH</th>
                     <th>MSNV</th>
                     <th>Tên NVBH</th>
+                    <th>STK trong HSKH</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -129,6 +131,10 @@ export default function HskhTab({
                       <td className="mono">{e.code}</td>
                       <td className="mono">{e.msnv}</td>
                       <td>{e.nvbh}</td>
+                      <td className="mono">
+                        {e.account || "–"}
+                        {e.bank && <div className="note">{e.bank}</div>}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

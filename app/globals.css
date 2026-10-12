@@ -138,3 +138,10 @@ td.staff { min-width: 130px; }
 @media (max-width: 800px) { .hskh-grid { grid-template-columns: 1fr; } }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover td { background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
+
+/* STK gần giống HSKH (nghi đọc nhầm): tô cam */
+tr.near td { background: color-mix(in srgb, var(--warn) 22%, var(--surface)); }
+tr.near td:first-child { box-shadow: inset 4px 0 0 var(--warn); }
+.note.warn-orange { color: var(--warn); font-weight: 600; }
+.note.info { color: var(--muted); font-style: italic; }
+.note.ok-text { color: var(--ok); }

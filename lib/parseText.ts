@@ -58,7 +58,13 @@ export function parseOcrText(text: string): BankFields {
     .replace(/[^\p{L}\p{N}\s\-.…()&]/gu, "")
     .trim();
 
-  const accountLine = linesAfter(LABELS.account, LABELS.bank)[0] ?? "";
+  // Số tài khoản/thẻ dài có thể xuống dòng: ghép các dòng tiếp theo chỉ toàn chữ số
+  const accLines = linesAfter(LABELS.account, LABELS.bank);
+  let accountLine = accLines[0] ?? "";
+  for (const l of accLines.slice(1, 3)) {
+    if (/^[\d\s.-]{3,}$/.test(l)) accountLine += l.trim();
+    else break;
+  }
   // Lấy cụm số dài nhất (cho phép nhóm số cách nhau, bỏ ký tự nhiễu lẻ từ icon)
   const account =
     (accountLine.match(/\d{3,}(?:[ .-]\d{3,})*/g) || [])

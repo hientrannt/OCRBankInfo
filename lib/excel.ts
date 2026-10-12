@@ -14,6 +14,11 @@ export interface ExportRow {
   nvbh?: string;
   /** Dòng trùng số tài khoản: tô đỏ cả dòng */
   duplicate?: boolean;
+  /** STK đăng ký trong HSKH và kết quả đối chiếu */
+  hskhAccount?: string;
+  hskhCheck?: string;
+  /** STK gần giống HSKH (lệch 1-2 số): nghi đọc nhầm, tô cam */
+  suspicious?: boolean;
   /** File gốc, ảnh thu nhỏ đã lưu, hoặc hàm tải ảnh khi cần (lịch sử trên máy chủ) */
   image?: Blob | (() => Promise<Blob | undefined>);
 }
@@ -48,19 +53,29 @@ export async function exportToExcel(rows: ExportRow[], opts: ExportOptions = {})
     { header: "Ngân hàng nhận", key: "bank", width: 50 },
     { header: "Tài khoản/thẻ nhận", key: "account", width: 22 },
     { header: "Tên người nhận", key: "name", width: 32 },
+    { header: "STK trong HSKH", key: "hskhAccount", width: 20 },
+    { header: "Đối chiếu HSKH", key: "hskhCheck", width: 36 },
     { header: "Tên file", key: "fileName", width: 40 },
     { header: "Ghi chú", key: "note", width: 36 },
   ];
   ws.columns = columns;
   rows.forEach((r, i) => {
-    const { image: _image, duplicate: _dup, ...data } = r;
-    ws.addRow({ stt: i + 1, ...data, msnv: data.msnv ?? "", nvbh: data.nvbh ?? "" });
+    const { image: _image, duplicate: _dup, suspicious: _sus, ...data } = r;
+    ws.addRow({
+      stt: i + 1,
+      ...data,
+      msnv: data.msnv ?? "",
+      nvbh: data.nvbh ?? "",
+      hskhAccount: data.hskhAccount ?? "",
+      hskhCheck: data.hskhCheck ?? "",
+    });
   });
 
   // Số tài khoản & mã KH lưu dạng chữ để không mất số 0 ở đầu / không bị dạng 4.7E+12
   ws.getColumn("account").numFmt = "@";
   ws.getColumn("customerCode").numFmt = "@";
   ws.getColumn("msnv").numFmt = "@";
+  ws.getColumn("hskhAccount").numFmt = "@";
 
   const header = ws.getRow(1);
   header.font = { bold: true, color: { argb: "FFFFFFFF" } };
@@ -72,9 +87,15 @@ export async function exportToExcel(rows: ExportRow[], opts: ExportOptions = {})
   ws.eachRow((row, n) => {
     // Dòng trùng số tài khoản: nền đỏ nhạt, chữ đỏ đậm
     const dup = n > 1 && rows[n - 2]?.duplicate;
+    const sus = n > 1 && !dup && rows[n - 2]?.suspicious;
     row.eachCell({ includeEmpty: true }, (c) => {
       c.border = { top: { style: "thin" }, left: { style: "thin" }, bottom: { style: "thin" }, right: { style: "thin" } };
       if (n > 1) c.alignment = { vertical: "middle", wrapText: true };
+      if (sus) {
+        // STK gần giống HSKH (nghi đọc nhầm): nền cam
+        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFEB9C" } };
+        c.font = { color: { argb: "FF9C5700" }, bold: c.col === row.getCell("hskhCheck").col };
+      }
       if (dup) {
         c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFC7CE" } };
         c.font = { color: { argb: "FF9C0006" }, bold: c.col === row.getCell("note").col };

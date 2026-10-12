@@ -35,3 +35,29 @@ test("báo lỗi rõ khi file không đúng mẫu HSKH", async () => {
   await assert.rejects(parseHskh(await workbook(["Tên", "Nhân Viên Bán", "Tên NVBH"], [["x", "1", "y"]])), /mã khách hàng/);
   assert.equal(normalizeCode(" 0573.00028 "), "0573/00028");
 });
+
+test("đối chiếu STK với HSKH: khớp / gần giống (nghi đọc nhầm) / khác hẳn", async () => {
+  const { checkAccount, accountCheckText, editDistance } = await import("./hskh.ts");
+  const e = { msnv: "1", nvbh: "A", account: "4705235387979", bank: "Agribank" };
+  assert.equal(checkAccount(e, "4705235387979").kind, "match");
+  const near = checkAccount(e, "4705255587979"); // Tesseract đọc nhầm 3 -> 5 hai chỗ
+  assert.deepEqual(near, { kind: "near", hskhAccount: "4705235387979", diff: 2 });
+  assert.match(accountCheckText(near), /có thể đọc nhầm/);
+  assert.equal(checkAccount(e, "470523538797").kind, "near"); // thiếu 1 chữ số
+  const diff = checkAccount(e, "19050622266014");
+  assert.equal(diff.kind, "different");
+  assert.match(accountCheckText(diff), /Khác STK trong HSKH: 4705235387979 \(Agribank\)/);
+  assert.equal(checkAccount({ msnv: "", nvbh: "" }, "123").kind, "none");
+  assert.equal(editDistance("12345", "12354"), 2);
+});
+
+test("HSKH đọc thêm STK, chủ TK, ngân hàng", async () => {
+  const buf = await workbook(
+    ["Số", "Số Tài Khoản Khách hàng", "Tên Chủ TK Ngân Hàng", "Tên Ngân hàng", "Nhân Viên Bán", "Tên NVBH"],
+    [["0573/00028", "968866975812", "HKD MỸ THỂ", "Ngân Hàng TMCP Hàng Hải", "7771", "Mai Xuân Phước"]],
+  );
+  const h = await parseHskh(buf);
+  assert.deepEqual(lookupHskh(h, "0573/00028"), {
+    msnv: "7771", nvbh: "Mai Xuân Phước", account: "968866975812", owner: "HKD MỸ THỂ", bank: "Ngân Hàng TMCP Hàng Hải",
+  });
+});
