@@ -51,10 +51,15 @@ export interface Backend {
 export const recordId = (fileName: string) =>
   createHash("sha256").update(fileName.normalize("NFC")).digest("hex").slice(0, 32);
 
-const PREFIX = "ocr-history";
+// OCR_BLOB_PREFIX: thư mục riêng trên Blob (để thử nghiệm không đụng dữ liệu thật)
+const PREFIX = process.env.OCR_BLOB_PREFIX || "ocr-history";
+const DOCS = process.env.OCR_BLOB_PREFIX ? `${PREFIX}-docs` : "ocr-docs";
 const INDEX = `${PREFIX}/index.json`;
 const thumbPath = (batch: string) => `${PREFIX}/thumbs/${batch}.json`;
-const docPath = (name: string) => `ocr-docs/${name.replace(/[^a-z0-9._-]/gi, "_")}`;
+const docName = (name: string) => name.replace(/[^a-z0-9._-]/gi, "_");
+const docPath = (name: string) => `${DOCS}/${docName(name)}`;
+
+export const strongEtag = (etag: string | null | undefined) => (etag ? etag.replace(/^W\//, "") : null);
 
 async function streamToText(stream: ReadableStream<Uint8Array>): Promise<string> {
   return new Response(stream).text();
@@ -71,7 +76,9 @@ function blobBackend(): Backend {
       const res = await get(INDEX, { ...opts, useCache: false });
       if (!res || res.statusCode !== 200) return { records: [], etag: null };
       const records = JSON.parse(await streamToText(res.stream)) as SharedRecord[];
-      return { records, etag: (res.blob as { etag?: string }).etag ?? null };
+      // Trên Vercel, bản đọc về bị nén nên ETag có dạng yếu W/"..."; ghi có điều kiện (ifMatch) cần ETag gốc,
+      // để nguyên W/ thì mọi lần ghi sau lần đầu đều bị coi là xung đột và thất bại.
+      return { records, etag: strongEtag(res.blob.etag) };
     },
     async writeIndex(records, etag) {
       const { put, BlobPreconditionFailedError } = await lib();
@@ -179,11 +186,11 @@ function fsBackend(dir: string): Backend {
       await fs.rm(dir, { recursive: true, force: true });
     },
     async getDoc(name) {
-      return fs.readFile(path.join(`${dir}-docs`, docPath(name).replace("ocr-docs/", "")), "utf8").catch(() => null);
+      return fs.readFile(path.join(`${dir}-docs`, docName(name)), "utf8").catch(() => null);
     },
     async putDoc(name, text) {
       await fs.mkdir(`${dir}-docs`, { recursive: true });
-      await fs.writeFile(path.join(`${dir}-docs`, docPath(name).replace("ocr-docs/", "")), text);
+      await fs.writeFile(path.join(`${dir}-docs`, docName(name)), text);
     },
   };
 }
@@ -212,6 +219,11 @@ async function mutate(backend: Backend, change: (records: SharedRecord[]) => Sha
   throw new Error("Lịch sử đang được nhiều người ghi cùng lúc, thử lại sau");
 }
 
+/** Việc dọn dẹp chạy sau khi đã trả lời (route handler đăng ký bằng setCleanupRunner, mặc định chạy nền) */
+let cleanupRunner: (task: Promise<unknown>) => void = (task) => void task.catch(() => {});
+export const setCleanupRunner = (run: (task: Promise<unknown>) => void) => (cleanupRunner = run);
+const cleanup = (task: Promise<unknown>) => cleanupRunner(task.catch(() => {}));
+
 const str = (v: unknown, max = 2000) => String(v ?? "").slice(0, max);
 
 /** Ghi/ghi đè nhiều bản ghi; ảnh thu nhỏ của cả lô lưu vào một file */
@@ -236,10 +248,11 @@ export async function upsertRecords(backend: Backend, incoming: IncomingRecord[]
   const thumbs: Record<string, string> = {};
   for (const r of clean) if (r.thumb) thumbs[recordId(r.fileName)] = r.thumb;
   const batch = Object.keys(thumbs).length ? `${Date.now().toString(36)}-${randomUUID().slice(0, 8)}` : "";
-  if (batch) await backend.putThumbBatch(batch, thumbs);
+  // Ghi ảnh và cập nhật index cùng lúc (mỗi lượt gọi Blob tốn vài trăm ms)
+  const thumbsSaved = batch ? backend.putThumbBatch(batch, thumbs) : Promise.resolve();
 
   let orphaned: string[] = [];
-  await mutate(backend, (records) => {
+  const indexSaved = mutate(backend, (records) => {
     const byName = new Map(records.map((r) => [r.fileName, r]));
     for (const { thumb, ...r } of clean) {
       const old = byName.get(r.fileName);
@@ -250,8 +263,9 @@ export async function upsertRecords(backend: Backend, incoming: IncomingRecord[]
     orphaned = [...new Set(records.map((r) => r.thumbBatch).filter((b): b is string => !!b && !used.has(b)))];
     return next;
   });
-  // Lô ảnh không còn bản ghi nào dùng (đã bị ghi đè hết) thì xóa cho gọn
-  await backend.deleteThumbBatches(orphaned);
+  await Promise.all([thumbsSaved, indexSaved]);
+  // Lô ảnh không còn bản ghi nào dùng (đã bị ghi đè hết) thì xóa cho gọn - không cần chờ
+  cleanup(backend.deleteThumbBatches(orphaned));
   return clean.length;
 }
 
@@ -264,7 +278,7 @@ export async function removeRecords(backend: Backend, fileNames: string[]) {
     orphaned = [...new Set(records.map((r) => r.thumbBatch).filter((b): b is string => !!b && !used.has(b)))];
     return next;
   });
-  await backend.deleteThumbBatches(orphaned);
+  cleanup(backend.deleteThumbBatches(orphaned));
 }
 
 export async function getThumb(backend: Backend, fileName: string): Promise<Buffer | null> {

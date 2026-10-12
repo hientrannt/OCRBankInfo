@@ -79,15 +79,15 @@ function setup(over: Partial<SharedStoreOptions> = {}) {
 
 const outbox = (storage: ReturnType<typeof memStorage>) => JSON.parse(storage.getItem(OUTBOX_KEY) || "[]");
 
-test("lưu lên cloud: gửi xong mới bỏ khỏi hàng chờ, chia lô 10 ảnh", async () => {
+test("lưu lên cloud: gửi xong mới bỏ khỏi hàng chờ, chia lô 30 ảnh, gửi song song", async () => {
   const { server, storage, mirror, make } = setup();
   const store = make();
-  await store.save(Array.from({ length: 25 }, (_, i) => rec(`${i}.jpg`)));
-  assert.equal(mirror.m.size, 25, "ghi vào trình duyệt trước");
-  assert.equal(outbox(storage).length, 25);
+  await store.save(Array.from({ length: 95 }, (_, i) => rec(`${i}.jpg`)));
+  assert.equal(mirror.m.size, 95, "ghi vào trình duyệt trước");
+  assert.equal(outbox(storage).length, 95);
   await store.flush();
-  assert.equal(server.s.db.size, 25);
-  assert.equal(server.s.posts, 3);
+  assert.equal(server.s.db.size, 95);
+  assert.equal(server.s.posts, 4);
   assert.equal(outbox(storage).length, 0);
   assert.equal(store.status().pending, 0);
   store.dispose();
@@ -185,6 +185,33 @@ test("xóa: mất trên cloud, trên trình duyệt và khỏi hàng chờ; tên
   await store.clear();
   assert.equal(server.s.db.size, 0);
   assert.equal(mirror.m.size, 0);
+  assert.equal(outbox(storage).length, 0);
+  store.dispose();
+});
+
+test("một lô lỗi giữa chừng: lô đã lưu bỏ khỏi hàng chờ, lô lỗi giữ lại để gửi lại", async () => {
+  const { server, storage, make } = setup({ retryDelays: [60_000] });
+  let calls = 0;
+  const flaky = (async (url: string, init: RequestInit) => {
+    if (init.method === "POST" && ++calls === 2) return Response.json({ error: "Blob lỗi" }, { status: 503 });
+    return server.fetchImpl(url, init);
+  }) as unknown as typeof fetch;
+  const store = createSharedStore(() => "pw", {
+    fetchImpl: flaky,
+    storage,
+    mirror: memMirror(),
+    flushDelay: 60_000,
+    retryDelays: [60_000],
+  });
+  make().dispose();
+  await store.save(Array.from({ length: 70 }, (_, i) => rec(`${i}.jpg`))); // 3 lô: 30, 30, 10
+  await store.flush();
+  const pending = store.status().pending;
+  assert.ok(pending > 0, "lô lỗi còn chờ");
+  assert.equal(server.s.db.size + pending, 70, "lô gửi được đã lưu, không trùng không mất");
+  assert.equal(outbox(storage).length, pending);
+  await store.flush();
+  assert.equal(server.s.db.size, 70);
   assert.equal(outbox(storage).length, 0);
   store.dispose();
 });

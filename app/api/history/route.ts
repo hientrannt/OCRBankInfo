@@ -1,10 +1,13 @@
-import { NextResponse } from "next/server";
-import { removeRecords, upsertRecords, type IncomingRecord } from "@/lib/sharedHistory";
+import { after, NextResponse } from "next/server";
+import { removeRecords, setCleanupRunner, upsertRecords, type IncomingRecord } from "@/lib/sharedHistory";
 import { access } from "./shared";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
+
+// Dọn lô ảnh cũ sau khi đã trả lời trình duyệt (không bắt người dùng chờ)
+setCleanupRunner((task) => after(task));
 
 /** Toàn bộ lịch sử dùng chung (không kèm ảnh; ảnh lấy qua /api/history/thumb) */
 export async function GET(req: Request) {
@@ -30,8 +33,9 @@ export async function POST(req: Request) {
   if (!Array.isArray(body.records)) return NextResponse.json({ error: "Thiếu records" }, { status: 400 });
   if (body.records.length > 200) return NextResponse.json({ error: "Tối đa 200 bản ghi mỗi lần" }, { status: 400 });
   try {
+    const t0 = Date.now();
     const saved = await upsertRecords(a.backend, body.records);
-    return NextResponse.json({ saved });
+    return NextResponse.json({ saved }, { headers: { "Server-Timing": `save;dur=${Date.now() - t0}` } });
   } catch (err) {
     return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 503 });
   }
