@@ -8,7 +8,7 @@ import { parseOcrText, type BankFields } from "@/lib/parseText";
 import { digitsOnly, looseKey } from "@/lib/text";
 import { fileToBase64ForApi, fileToCanvasForTesseract, fileToThumbBlob } from "@/lib/image";
 import { getAllHistory, historyKey, type HistoryRecord } from "@/lib/history";
-import { createSharedStore, localStore, type HistoryStore, type StoreKind } from "@/lib/historyStore";
+import { createSharedStore, localStore, type HistoryStore, type StoreKind, type SyncStatus } from "@/lib/historyStore";
 import { makeBackup, parseBackup } from "@/lib/backup";
 import { importExcel } from "@/lib/excelImport";
 import { findDuplicateAccounts } from "@/lib/duplicates";
@@ -154,22 +154,33 @@ export default function Home() {
   const [storeKind, setStoreKind] = useState<StoreKind>("shared");
   // Mã lỗi cloud gần nhất: bad_password (cần nhập mật khẩu), no_password / no_store (máy chủ chưa cấu hình)
   const [cloudError, setCloudError] = useState("");
-  const syncedRef = useRef<HistoryStore | null>(null);
   // Đã đọc xong cài đặt lưu trong trình duyệt (mật khẩu, nơi lưu...) - phải đợi rồi mới kết nối cloud
   const [settingsReady, setSettingsReady] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const passwordRef = useRef("");
   passwordRef.current = password;
-  const store: HistoryStore = useMemo(
+  // Trạng thái gửi lên cloud: số ảnh còn chờ, lỗi gần nhất
+  const [sync, setSync] = useState<SyncStatus>({ pending: 0, sending: false, error: "", code: "" });
+  // Số ảnh có trên trình duyệt này mà cloud chưa có (người dùng tự bấm để đưa lên)
+  const [localOnly, setLocalOnly] = useState<HistoryRecord[]>([]);
+  const [cloudSync, setCloudSync] = useState<null | "ask" | "working">(null);
+  const store = useMemo(
     () =>
       storeKind === "shared"
-        ? createSharedStore(
-            () => passwordRef.current,
-            (e) => setHistoryError(`Chưa lưu được lên máy chủ: ${e.message}`),
-          )
+        ? createSharedStore(() => passwordRef.current, {
+            onStatus: setSync,
+            onError: (e) => {
+              const code = (e as { code?: string }).code;
+              if (code === "bad_password" || code === "no_password" || code === "no_store") setCloudError(code);
+            },
+          })
         : localStore,
     [storeKind],
   );
+  useEffect(() => {
+    if (store.kind !== "shared") setSync({ pending: 0, sending: false, error: "", code: "" });
+    return () => store.dispose?.();
+  }, [store]);
   const historyRef = useRef<HistoryRecord[]>([]);
   const [hskh, setHskh] = useState<HskhData | null>(null);
   const [dup, setDup] = useState<DupPrompt | null>(null);
@@ -212,8 +223,10 @@ export default function Home() {
       .then((r) => (r.ok ? r.json() : null))
       .then(async (remote: HskhData | null) => {
         if (remote?.entries && (!local || remote.importedAt >= local.importedAt)) {
-          setHskh(remote);
-          saveLocalHskh(remote);
+          // count 0 = đã bấm "Bỏ HSKH" ở một máy: máy nào cũng bỏ theo
+          const data = Object.keys(remote.entries).length ? remote : null;
+          setHskh(data);
+          saveLocalHskh(data);
         } else if (local) {
           // Cloud chưa có HSKH hoặc bản trên máy này mới hơn: đưa lên cloud
           const res = await fetch("/api/hskh", {
@@ -256,18 +269,15 @@ export default function Home() {
       let list = await store.getAll();
       setHistoryError("");
       setCloudError("");
-      // Lần đầu kết nối cloud trên máy này: đưa lịch sử đang có trên trình duyệt lên cloud
-      // (chỉ những ảnh cloud chưa có, không ghi đè dữ liệu trên cloud)
-      if (store.kind === "shared" && syncedRef.current !== store) {
-        syncedRef.current = store;
-        const onCloud = new Set(list.map((h) => h.fileName));
-        const localOnly = (await getAllHistory().catch(() => [])).filter((h) => !onCloud.has(h.fileName));
-        if (localOnly.length) {
-          await store.save(localOnly);
+      if (store.kind === "shared") {
+        // Gửi nốt ảnh đọc xong mà chưa lên được cloud (lần trước lỗi mạng, sai mật khẩu, đóng trang...)
+        if (store.pendingCount?.()) {
           await store.flush();
           list = await store.getAll();
-          setMessage((m) => [m, `Đã đưa ${localOnly.length} ảnh trong lịch sử của máy này lên cloud.`].filter(Boolean).join(" "));
         }
+        // Ảnh chỉ có trên trình duyệt này: không tự đưa lên (tránh ảnh đã xóa trên cloud hiện lại), chỉ báo để bấm
+        const onCloud = new Set(list.map((h) => h.fileName));
+        setLocalOnly((await getAllHistory().catch(() => [])).filter((h) => !onCloud.has(h.fileName)));
       }
       setHistory(list);
     } catch (err) {
@@ -299,14 +309,14 @@ export default function Home() {
 
   // Cảnh báo khi đóng/tải lại trang lúc đang đọc (mất kết quả)
   useEffect(() => {
-    if (!running) return;
+    if (!running && !sync.pending) return;
     const warn = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = "";
     };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [running]);
+  }, [running, sync.pending]);
 
   function changeAi(patch: (prev: AiSettings) => AiSettings) {
     setAi((prev) => {
@@ -447,26 +457,30 @@ export default function Home() {
     run(todo);
   }
 
-  /** Lưu dòng vào lịch sử (chỉ dòng đọc xong: OK hoặc Cần kiểm tra) */
-  async function persist(row: Row, engineLabel: string | null, withThumb: boolean) {
-    if (row.status !== "ok" && row.status !== "review") return;
-    const prev = history.find((h) => h.fileName === row.fileName);
-    let thumb: Blob | undefined;
-    if (withThumb && row.file) thumb = await fileToThumbBlob(row.file).catch(() => undefined);
-    const rec: HistoryRecord = {
-      fileName: row.fileName,
+  function toRecord(row: Row, prev: HistoryRecord | undefined, engineLabel: string | null, thumb?: Blob): HistoryRecord {
+    return {
+      fileName: historyKey(row.fileName),
       customerCode: row.customerCode,
       businessName: row.businessName,
       bank: row.bank,
       account: row.account,
       name: row.name,
-      status: row.status,
+      status: row.status === "ok" ? "ok" : "review",
       note: row.note.replace(/^Đã có từ [^·]*(· )?/, ""),
       engine: engineLabel ?? prev?.engine ?? "",
       size: row.file?.size ?? prev?.size ?? 0,
       readAt: engineLabel ? Date.now() : (prev?.readAt ?? Date.now()),
       thumb,
     };
+  }
+
+  /** Lưu dòng vào lịch sử (chỉ dòng đọc xong: OK hoặc Cần kiểm tra) */
+  async function persist(row: Row, engineLabel: string | null, withThumb: boolean) {
+    if (row.status !== "ok" && row.status !== "review") return;
+    const prev = history.find((h) => h.fileName === historyKey(row.fileName));
+    let thumb: Blob | undefined;
+    if (withThumb && row.file) thumb = await fileToThumbBlob(row.file).catch(() => undefined);
+    const rec = toRecord(row, prev, engineLabel, thumb);
     try {
       await store.save([rec]);
       setHistory((list) => {
@@ -477,6 +491,72 @@ export default function Home() {
     } catch {
       setHistoryError(store.kind === "shared" ? "Không lưu được lịch sử lên máy chủ." : "Không lưu được lịch sử trên trình duyệt này.");
     }
+  }
+
+  /**
+   * Lưu các dòng ở tab Đọc ảnh lên cloud. replace = xóa trên cloud các ảnh không có trong bảng.
+   * Xong thì đọc lại từ cloud để kiểm tra từng ảnh đã có đủ, đúng STK và tên.
+   */
+  async function syncTable(replace: boolean) {
+    const list = rowsRef.current.filter((r) => r.status === "ok" || r.status === "review");
+    if (!list.length || store.kind !== "shared") return;
+    setCloudSync("working");
+    try {
+      const byName = new Map(historyRef.current.map((h) => [h.fileName, h]));
+      const records: HistoryRecord[] = [];
+      for (const row of list) {
+        const prev = byName.get(historyKey(row.fileName));
+        // Cloud chưa có ảnh thu nhỏ thì tạo từ file gốc
+        const thumb =
+          prev?.thumb ?? (row.file && !prev?.hasThumb ? await fileToThumbBlob(row.file).catch(() => undefined) : undefined);
+        records.push(toRecord(row, prev, null, thumb));
+      }
+      await store.save(records);
+      await store.flush();
+      const left = store.pendingCount?.() ?? 0;
+      if (left) throw new Error(`còn ${left} ảnh chưa gửi được (${store.status?.().error || "lỗi máy chủ"}). App sẽ tự gửi lại`);
+      const keep = new Set(records.map((r) => r.fileName));
+      let removed = 0;
+      if (replace) {
+        const extra = (await store.getAll()).filter((h) => !keep.has(h.fileName)).map((h) => h.fileName);
+        if (extra.length) await store.remove(extra);
+        removed = extra.length;
+      }
+      // Kiểm tra lại: đọc từ cloud, so từng ảnh
+      const cloud = await store.getAll();
+      const onCloud = new Map(cloud.map((h) => [h.fileName, h]));
+      const bad = records.filter((r) => {
+        const c = onCloud.get(r.fileName);
+        return !c || c.account !== r.account || c.name !== r.name || c.bank !== r.bank;
+      });
+      setHistory(cloud);
+      setLocalOnly((l) => (replace ? [] : l.filter((h) => !onCloud.has(h.fileName))));
+      setMessage(
+        bad.length
+          ? `Cảnh báo: ${bad.length} ảnh chưa khớp trên cloud (${bad
+              .slice(0, 5)
+              .map((r) => r.fileName)
+              .join(", ")}${bad.length > 5 ? "…" : ""}). Bấm Lưu bảng lên cloud lần nữa.`
+          : `Đã lưu ${records.length} ảnh lên cloud${removed ? ` và xóa ${removed} ảnh cũ không có trong bảng` : ""}. ` +
+              `Đã kiểm tra lại trên cloud: đủ ${records.length}/${records.length} ảnh, đúng ngân hàng, STK và tên. ` +
+              `Lịch sử cloud hiện có ${cloud.length} ảnh.`,
+      );
+    } catch (err) {
+      setMessage(`Chưa lưu xong lên cloud: ${err instanceof Error ? err.message : err}`);
+    } finally {
+      setCloudSync(null);
+    }
+  }
+
+  async function uploadLocalOnly() {
+    const list = localOnly;
+    if (!list.length) return;
+    if (!window.confirm(`Đưa ${list.length} ảnh chỉ có trên trình duyệt này lên lịch sử cloud?`)) return;
+    await store.save(list);
+    await store.flush();
+    await reloadHistory();
+    const left = store.pendingCount?.() ?? 0;
+    setMessage(left ? `Còn ${left} ảnh chưa lên được cloud, app sẽ tự gửi lại.` : `Đã đưa ${list.length} ảnh lên cloud.`);
   }
 
   /** Sửa tay trong bảng: cập nhật ngay, lưu lịch sử sau 0,6 giây ngừng gõ */
@@ -948,6 +1028,29 @@ export default function Home() {
         ))}
       </nav>
 
+      {storeKind === "shared" && historyLoaded && !cloudError && (
+        <div className={`sync-bar ${sync.error ? "bad" : sync.pending ? "busy" : "ok"}`} role="status">
+          {sync.error ? (
+            <>
+              <span>
+                {sync.pending} ảnh chưa lên cloud: {sync.error}. Ảnh vẫn giữ trên máy này, app tự gửi lại.
+              </span>
+              <button className="btn sm" onClick={() => void store.flush()}>
+                Gửi lại ngay
+              </button>
+            </>
+          ) : sync.pending ? (
+            <span>Đang lưu {sync.pending} ảnh lên cloud…</span>
+          ) : (
+            <span>Đã lưu hết lên cloud · lịch sử cloud có {history.length} ảnh</span>
+          )}
+          {localOnly.length > 0 && (
+            <button className="btn sm" onClick={() => void uploadLocalOnly()}>
+              Đưa {localOnly.length} ảnh chỉ có trên máy này lên cloud
+            </button>
+          )}
+        </div>
+      )}
       {historyError && <div className="notice">{historyError}</div>}
       {message && <div className="notice">{message}</div>}
 
@@ -956,6 +1059,7 @@ export default function Home() {
           <span className="field-label">Dữ liệu chung trên cloud</span>
           <span className="hint">
             Nhập mật khẩu truy cập để xem Lịch sử và HSKH dùng chung (mỗi máy chỉ cần nhập một lần).
+            {sync.pending > 0 && ` Có ${sync.pending} ảnh đang chờ lên cloud (vẫn giữ trên máy này), nhập đúng mật khẩu là gửi.`}
           </span>
           <input
             type="password"
@@ -1219,6 +1323,18 @@ export default function Home() {
             <button className="btn primary" disabled={busy || !stats.done} onClick={onExport}>
               {exporting ? `Đang tạo Excel ${exporting.done}/${exporting.total}…` : "Xuất Excel"}
             </button>
+            {storeKind === "shared" && (
+              <button
+                className="btn"
+                disabled={busy || !(stats.ok + stats.review) || cloudSync !== null}
+                onClick={async () => {
+                  await reloadHistory(); // lấy số ảnh mới nhất trên cloud để hỏi cho đúng
+                  setCloudSync("ask");
+                }}
+              >
+                {cloudSync === "working" ? "Đang lưu lên cloud…" : "Lưu bảng lên cloud"}
+              </button>
+            )}
           </section>
 
           <section className="panel summary">
@@ -1294,6 +1410,12 @@ export default function Home() {
           onClear={() => {
             setHskh(null);
             saveLocalHskh(null);
+            if (store.kind === "shared")
+              void fetch("/api/hskh", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json", "x-app-password": passwordRef.current },
+                body: JSON.stringify({ entries: {}, fileName: "", importedAt: Date.now() }),
+              }).then((r) => !r.ok && setMessage("Chưa bỏ được HSKH trên cloud (máy khác vẫn thấy). Thử lại sau."));
           }}
         />
       )}
@@ -1310,6 +1432,7 @@ export default function Home() {
             try {
               await store.remove(names);
               setHistory((list) => list.filter((h) => !names.includes(h.fileName)));
+              setLocalOnly((list) => list.filter((h) => !names.includes(h.fileName)));
             } catch (err) {
               setMessage(`Không xóa được: ${err instanceof Error ? err.message : err}`);
             }
@@ -1318,6 +1441,7 @@ export default function Home() {
             try {
               await store.clear();
               setHistory([]);
+              setLocalOnly([]);
             } catch (err) {
               setMessage(`Không xóa được: ${err instanceof Error ? err.message : err}`);
             }
@@ -1366,6 +1490,46 @@ export default function Home() {
           </div>
         </div>
       )}
+
+      {cloudSync === "ask" &&
+        (() => {
+          const names = new Set(
+            rows.filter((r) => r.status === "ok" || r.status === "review").map((r) => historyKey(r.fileName)),
+          );
+          const extra = history.filter((h) => !names.has(h.fileName)).length;
+          return (
+            <div className="modal dialog-backdrop" role="dialog" aria-modal="true" aria-labelledby="sync-title">
+              <div className="dialog" onClick={(e) => e.stopPropagation()}>
+                <h2 id="sync-title">Lưu {names.size} ảnh trong bảng lên cloud</h2>
+                <p>
+                  Lịch sử cloud đang có {history.length} ảnh
+                  {extra ? `, trong đó ${extra} ảnh không có trong bảng này` : ""}. Sau khi lưu, app đọc lại từ cloud để
+                  kiểm tra từng ảnh.
+                </p>
+                <div className="dialog-actions">
+                  <button className="btn primary" onClick={() => void syncTable(false)} autoFocus>
+                    Thêm / cập nhật {names.size} ảnh vào lịch sử cloud
+                  </button>
+                  <button
+                    className="btn danger-outline"
+                    onClick={() =>
+                      (!extra ||
+                        window.confirm(
+                          `Xóa ${extra} ảnh trên cloud không có trong bảng? Máy nào cũng sẽ không còn thấy các ảnh này.`,
+                        )) &&
+                      void syncTable(true)
+                    }
+                  >
+                    Thay toàn bộ lịch sử cloud bằng bảng này{extra ? ` (xóa ${extra} ảnh cũ)` : ""}
+                  </button>
+                  <button className="btn ghost" onClick={() => setCloudSync(null)}>
+                    Hủy
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
       {preview && (
         <div className="modal" onClick={() => setPreview(null)}>

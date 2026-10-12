@@ -147,3 +147,10 @@ tr.near td:first-child { box-shadow: inset 4px 0 0 var(--warn); }
 .note.ok-text { color: var(--ok); }
 
 .cloud-gate { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+
+/* Trạng thái lưu lên cloud */
+.sync-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 7px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); font-size: 13px; line-height: 1.45; }
+.sync-bar.ok { color: var(--ok); }
+.sync-bar.busy { color: var(--accent); }
+.sync-bar.bad { color: var(--err); background: var(--err-bg); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
+.sync-bar .btn { color: var(--ink); }

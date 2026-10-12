@@ -11,7 +11,7 @@ export async function GET(req: Request) {
   const a = access(req);
   if ("error" in a) return a.error;
   const text = await a.backend.getDoc(DOC);
-  return new Response(text ?? "null", { headers: { "Content-Type": "application/json" } });
+  return new Response(text ?? "null", { headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
 }
 
 export async function PUT(req: Request) {
