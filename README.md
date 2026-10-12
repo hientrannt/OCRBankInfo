@@ -105,11 +105,15 @@ dữ liệu.
   số lượt ghi mỗi tháng, gom lô cũng giúp tiết kiệm lượt ghi.
 - Chạy trên máy riêng (không phải Vercel): dữ liệu "cloud" lưu ở thư mục `.data/ocr-history`.
 
-## Tên người nhận: IN HOA KHÔNG DẤU
+## Tên người nhận không dấu; số tài khoản đọc bằng bộ đọc số
 
-Tên chủ tài khoản ngân hàng trong ảnh luôn là chữ in hoa không dấu. Tesseract (bộ đọc tiếng Việt) và đôi khi AI tự đoán
-thêm dấu (vd "THỊ", "NHÀ"), nên app luôn bỏ dấu và viết hoa tên người nhận sau khi đọc. Tên đã lưu trong lịch sử
-từ trước mà còn dấu / chữ thường được tự sửa (và lưu lại lên cloud) khi mở app.
+- Tên chủ tài khoản ngân hàng trong ảnh không có dấu. Tesseract (bộ đọc tiếng Việt) và đôi khi AI tự đoán thêm dấu
+  (vd "THỊ", "NHÀ"), nên app bỏ dấu tên người nhận, **giữ nguyên chữ hoa/thường** như trong ảnh. Tên đã lưu từ trước
+  mà còn dấu được tự sửa khi mở app.
+- Bộ tiếng Việt của Tesseract hay đọc số **3 thành 5**. App đọc số tài khoản bằng bộ tiếng Anh (đọc số chính xác hơn
+  nhiều), ngân hàng và tên vẫn đọc bằng bộ tiếng Việt.
+- Tab Lịch sử → **Đọc lại STK từ ảnh đã lưu**: đọc lại số tài khoản các ảnh đã đọc bằng Tesseract (từ ảnh thu nhỏ đã
+  lưu), sửa số đọc nhầm (ghi chú số cũ) và khôi phục chữ hoa/thường của tên.
 
 ## HSKH: dò MSNV nhân viên bán hàng
 
