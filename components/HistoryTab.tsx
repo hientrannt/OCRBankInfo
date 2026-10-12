@@ -54,6 +54,8 @@ export default function HistoryTab({
   onBackup,
   onRestore,
   onImportExcel,
+  onReread,
+  rereading,
 }: {
   records: HistoryRecord[];
   busy: boolean;
@@ -67,6 +69,9 @@ export default function HistoryTab({
   onBackup: () => void;
   onRestore: (file: File) => void;
   onImportExcel: (file: File) => void;
+  /** Đọc lại STK các ảnh đọc bằng Tesseract từ ảnh thu nhỏ đã lưu */
+  onReread: () => void;
+  rereading: { done: number; total: number } | null;
 }) {
   const [query, setQuery] = useState("");
   const [onlyReview, setOnlyReview] = useState(false);
@@ -114,6 +119,14 @@ export default function HistoryTab({
           Chỉ dòng trùng STK ({dupCount})
         </label>
         <span className="spacer" />
+        <button
+          className="btn"
+          disabled={busy || !!rereading || !records.some((r) => /tesseract/i.test(r.engine))}
+          onClick={onReread}
+          title="Bộ đọc tiếng Việt của Tesseract hay đọc số 3 thành 5: đọc lại số tài khoản bằng bộ đọc số"
+        >
+          {rereading ? `Đang đọc lại STK ${rereading.done}/${rereading.total}…` : "Đọc lại STK từ ảnh đã lưu"}
+        </button>
         <button className="btn primary" disabled={busy || !filtered.length} onClick={() => onExport(filtered)}>
           Xuất Excel {filtered.length !== records.length ? `(${filtered.length} dòng đang lọc)` : `(${records.length})`}
         </button>

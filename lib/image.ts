@@ -8,7 +8,7 @@ async function decode(file: Blob): Promise<ImageBitmap> {
 }
 
 /** Đọc file ảnh thành canvas, có thể phóng to / chuyển xám để OCR tốt hơn */
-async function toCanvas(file: File, maxSide: number, minSide = 0, grayscale = false) {
+async function toCanvas(file: Blob, maxSide: number, minSide = 0, grayscale = false) {
   const bitmap = await decode(file);
   const longest = Math.max(bitmap.width, bitmap.height);
   let scale = 1;
@@ -41,7 +41,7 @@ export async function fileToBase64ForApi(file: File): Promise<{ image: string; m
 }
 
 /** Canvas đã tiền xử lý cho Tesseract (phóng to ảnh nhỏ, chuyển xám) */
-export function fileToCanvasForTesseract(file: File) {
+export function fileToCanvasForTesseract(file: Blob) {
   return toCanvas(file, 3000, 2000, true);
 }
 

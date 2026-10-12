@@ -28,17 +28,17 @@ Ho Kinh Doanh An Binh`;
   assert.deepEqual(parseOcrText(text), {
     bank: "AGRIBANK - Ngân hàng Nôn...",
     account: "4705235387979",
-    name: "HO KINH DOANH AN BINH",
+    name: "Ho Kinh Doanh An Binh",
   });
 });
 
-test("tên người nhận luôn IN HOA KHÔNG DẤU: bỏ dấu Tesseract tự thêm", () => {
+test("tên người nhận không dấu: bỏ dấu Tesseract tự thêm, giữ nguyên chữ hoa/thường", () => {
   const text = `Tên người nhận
 HO KINH DOANH NHÀ THUOC ANH MAN - DAO THỊ BAO CHAU
 Ngân hàng nhận
 MB`;
   assert.equal(parseOcrText(text).name, "HO KINH DOANH NHA THUOC ANH MAN - DAO THI BAO CHAU");
-  assert.equal(bankName("  quay thuoc tan duoc TUẦN   Huyền đức "), "QUAY THUOC TAN DUOC TUAN HUYEN DUC");
+  assert.equal(bankName("  Quầy thuốc TUẦN   Huyền Đức "), "Quay thuoc TUAN Huyen Duc");
 });
 
 test("normalizeBankName khôi phục tên bị cắt", () => {

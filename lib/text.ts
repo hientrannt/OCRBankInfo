@@ -8,11 +8,11 @@ export function stripDiacritics(s: string): string {
 }
 
 /**
- * Tên chủ tài khoản ngân hàng luôn là chữ IN HOA KHÔNG DẤU (như trong ảnh). Tesseract (bộ tiếng Việt) và đôi khi AI
- * tự đoán thêm dấu (vd "THỊ", "NHÀ"), nên chuẩn hóa: bỏ dấu, viết hoa, gộp khoảng trắng.
+ * Tên chủ tài khoản ngân hàng trong ảnh không có dấu. Tesseract (bộ tiếng Việt) và đôi khi AI tự đoán thêm dấu
+ * (vd "THỊ", "NHÀ"), nên bỏ dấu và gộp khoảng trắng; giữ nguyên chữ hoa/thường như trong ảnh.
  */
 export function bankName(s: string): string {
-  return stripDiacritics(s).toUpperCase().replace(/\s+/g, " ").trim();
+  return stripDiacritics(s).replace(/\s+/g, " ").trim();
 }
 
 export function looseKey(s: string): string {

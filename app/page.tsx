@@ -189,9 +189,10 @@ export default function Home() {
   // AI đọc số tài khoản 2 lần độc lập để bắt lỗi đọc nhầm
   const [verifyTwice, setVerifyTwice] = useState(true);
   const [exporting, setExporting] = useState<{ done: number; total: number } | null>(null);
+  const [rereading, setRereading] = useState<{ done: number; total: number } | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const stopRef = useRef(false);
-  const schedulerRef = useRef<Promise<Scheduler> | null>(null);
+  const schedulerRef = useRef<Promise<{ text: Scheduler; digits: Scheduler }> | null>(null);
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
 
@@ -322,14 +323,14 @@ export default function Home() {
 
   // Cảnh báo khi đóng/tải lại trang lúc đang đọc (mất kết quả)
   useEffect(() => {
-    if (!running && !sync.pending) return;
+    if (!running && !sync.pending && !rereading) return;
     const warn = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = "";
     };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [running, sync.pending]);
+  }, [running, sync.pending, rereading]);
 
   function changeAi(patch: (prev: AiSettings) => AiSettings) {
     setAi((prev) => {
@@ -605,29 +606,122 @@ export default function Home() {
     setFiles(files, folder);
   }
 
-  function getScheduler(): Promise<Scheduler> {
+  function getSchedulers(): Promise<{ text: Scheduler; digits: Scheduler }> {
     // Giữ một lời hứa duy nhất để các luồng song song không tạo trùng worker
     if (!schedulerRef.current) {
       schedulerRef.current = (async () => {
         const { createScheduler, createWorker } = await import("tesseract.js");
-        const scheduler = createScheduler();
-        const workers = await Promise.all(
-          Array.from({ length: TESSERACT_WORKERS }, () => createWorker(["vie", "eng"])),
-        );
-        workers.forEach((w) => scheduler.addWorker(w));
-        return scheduler;
+        const make = async (langs: string[]) => {
+          const scheduler = createScheduler();
+          const workers = await Promise.all(Array.from({ length: TESSERACT_WORKERS }, () => createWorker(langs)));
+          workers.forEach((w) => scheduler.addWorker(w));
+          return scheduler;
+        };
+        // Bộ tiếng Việt đọc ngân hàng, tên; bộ tiếng Anh đọc số tài khoản (bộ tiếng Việt hay đọc 3 thành 5)
+        const [text, digits] = await Promise.all([make(["vie", "eng"]), make(["eng"])]);
+        return { text, digits };
       })();
       schedulerRef.current.catch(() => (schedulerRef.current = null));
     }
     return schedulerRef.current;
   }
 
-  async function readWithTesseract(file: File): Promise<BankFields> {
-    const scheduler = await getScheduler();
+  /** accountDigits: STK do bộ tiếng Anh đọc (rỗng nếu không thấy); account: STK dùng (bộ tiếng Anh, không có thì bộ tiếng Việt) */
+  async function readWithTesseract(file: Blob): Promise<BankFields & { accountDigits: string }> {
+    const { text, digits } = await getSchedulers();
     const canvas = await fileToCanvasForTesseract(file);
-    const { data } = await scheduler.addJob("recognize", canvas);
+    const [a, b] = await Promise.all([text.addJob("recognize", canvas), digits.addJob("recognize", canvas)]);
     canvas.width = canvas.height = 0; // giải phóng bộ nhớ canvas ngay
-    return parseOcrText(data.text);
+    const t = parseOcrText(a.data.text);
+    const accountDigits = parseOcrText(b.data.text).account;
+    return { ...t, account: accountDigits || t.account, accountDigits };
+  }
+
+  /**
+   * Sửa lịch sử đã đọc bằng Tesseract: đọc lại STK từ ảnh thu nhỏ đã lưu bằng bộ đọc số (bộ tiếng Việt hay đọc 3 thành 5),
+   * và khôi phục chữ hoa/thường của tên khi chữ đọc được khớp hoàn toàn với tên đang lưu.
+   */
+  async function rereadFromThumbs() {
+    const list = history.filter((h) => /tesseract/i.test(h.engine) && (h.thumb || h.hasThumb));
+    if (!list.length) {
+      setMessage("Không có ảnh nào đọc bằng Tesseract có ảnh thu nhỏ đã lưu.");
+      return;
+    }
+    const minutes = Math.max(1, Math.ceil((list.length * 2.5) / 60 / TESSERACT_WORKERS));
+    if (
+      !window.confirm(
+        `Đọc lại số tài khoản cho ${list.length} ảnh đã đọc bằng Tesseract (từ ảnh thu nhỏ đã lưu)?\n` +
+          `Số nào khác sẽ được sửa và ghi chú số cũ. Mất khoảng ${minutes} phút, đừng đóng trang.`,
+      )
+    )
+      return;
+    setRereading({ done: 0, total: list.length });
+    const changed: HistoryRecord[] = [];
+    let accFixed = 0;
+    let nameFixed = 0;
+    let skipped = 0;
+    let next = 0;
+    let done = 0;
+    const worker = async () => {
+      while (next < list.length) {
+        const h = list[next++];
+        try {
+          const blob = await store.loadThumb(h);
+          if (!blob) {
+            skipped++;
+            continue;
+          }
+          const r = await readWithTesseract(blob);
+          let rec: HistoryRecord | null = null;
+          const staffAcc = digitsOnly(lookupHskh(hskh, h.customerCode)?.account ?? "");
+          // Biểu tượng sổ ngay sau STK đôi khi bị đọc thành thêm 1 chữ số ở cuối: bỏ đi nếu dài hơn số cũ đúng 1 số
+          const cand =
+            r.accountDigits.length === h.account.length + 1 && r.accountDigits !== staffAcc
+              ? r.accountDigits.slice(0, -1)
+              : r.accountDigits;
+          // Chỉ sửa khi bộ đọc số đọc ra số hợp lý: cùng độ dài số cũ, hoặc khớp STK trong HSKH
+          if (cand.length >= 6 && cand !== h.account && (cand.length === h.account.length || cand === staffAcc)) {
+            rec = {
+              ...h,
+              account: cand,
+              note: [h.note, `STK đọc lại bằng bộ đọc số (trước đây ${h.account || "trống"})`].filter(Boolean).join("; "),
+            };
+            accFixed++;
+          } else if (cand && cand !== h.account && cand.length !== h.account.length) {
+            skipped++;
+          }
+          const name = bankName(r.name);
+          if (name !== h.name && name.toUpperCase() === h.name.toUpperCase()) {
+            rec = { ...(rec ?? h), name };
+            nameFixed++;
+          }
+          if (rec) {
+            const { thumb: _t, hasThumb: _h, ...plain } = rec;
+            changed.push(plain);
+          }
+        } catch {
+          skipped++;
+        } finally {
+          setRereading({ done: ++done, total: list.length });
+        }
+      }
+    };
+    try {
+      await Promise.all(Array.from({ length: TESSERACT_WORKERS }, worker));
+      if (changed.length) {
+        await store.save(changed);
+        await store.flush();
+        const byName = new Map(changed.map((c) => [c.fileName, c]));
+        setHistory((l) => l.map((h) => (byName.has(h.fileName) ? { ...h, ...byName.get(h.fileName)! } : h)));
+      }
+      setMessage(
+        `Đã đọc lại ${list.length} ảnh: sửa số tài khoản ở ${accFixed} ảnh, khôi phục chữ hoa/thường tên ở ${nameFixed} ảnh` +
+          (skipped ? `; ${skipped} ảnh không đọc được rõ, giữ nguyên (nên xem lại ảnh)` : "") +
+          ". Các số đã sửa có ghi chú \"STK đọc lại\" kèm số cũ.",
+      );
+    } finally {
+      setRereading(null);
+    }
   }
 
   async function processRow(row: Row, engine: Engine) {
@@ -1463,6 +1557,8 @@ export default function Home() {
           onBackup={onBackup}
           onRestore={onRestore}
           onImportExcel={onImportExcel}
+          onReread={rereadFromThumbs}
+          rereading={rereading}
         />
       )}
 
