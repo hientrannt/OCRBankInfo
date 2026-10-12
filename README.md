@@ -105,6 +105,12 @@ dữ liệu.
   số lượt ghi mỗi tháng, gom lô cũng giúp tiết kiệm lượt ghi.
 - Chạy trên máy riêng (không phải Vercel): dữ liệu "cloud" lưu ở thư mục `.data/ocr-history`.
 
+## Tên người nhận: IN HOA KHÔNG DẤU
+
+Tên chủ tài khoản ngân hàng trong ảnh luôn là chữ in hoa không dấu. Tesseract (bộ đọc tiếng Việt) và đôi khi AI tự đoán
+thêm dấu (vd "THỊ", "NHÀ"), nên app luôn bỏ dấu và viết hoa tên người nhận sau khi đọc. Tên đã lưu trong lịch sử
+từ trước mà còn dấu / chữ thường được tự sửa (và lưu lại lên cloud) khi mở app.
+
 ## HSKH: dò MSNV nhân viên bán hàng
 
 Tab **HSKH** → **Tải lên file HSKH** (Excel hồ sơ khách hàng). App lấy cột **Số** (mã KH, vd `0573/00028`),

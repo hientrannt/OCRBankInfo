@@ -5,7 +5,7 @@ import type { Scheduler } from "tesseract.js";
 import { IMAGE_EXTENSIONS, parseFileName } from "@/lib/filename";
 import { normalizeBankName } from "@/lib/banks";
 import { parseOcrText, type BankFields } from "@/lib/parseText";
-import { digitsOnly, looseKey } from "@/lib/text";
+import { bankName, digitsOnly, looseKey } from "@/lib/text";
 import { fileToBase64ForApi, fileToCanvasForTesseract, fileToThumbBlob } from "@/lib/image";
 import { getAllHistory, historyKey, type HistoryRecord } from "@/lib/history";
 import { createSharedStore, localStore, type HistoryStore, type StoreKind, type SyncStatus } from "@/lib/historyStore";
@@ -278,6 +278,19 @@ export default function Home() {
         // Ảnh chỉ có trên trình duyệt này: không tự đưa lên (tránh ảnh đã xóa trên cloud hiện lại), chỉ báo để bấm
         const onCloud = new Set(list.map((h) => h.fileName));
         setLocalOnly((await getAllHistory().catch(() => [])).filter((h) => !onCloud.has(h.fileName)));
+      }
+      // Tên người nhận lưu từ trước còn dấu / chữ thường (Tesseract tự thêm dấu): sửa về IN HOA KHÔNG DẤU như ảnh
+      const wrong = list.filter((h) => h.name !== bankName(h.name));
+      if (wrong.length) {
+        const fixed = wrong.map(({ thumb: _t, hasThumb: _h, ...h }) => ({ ...h, name: bankName(h.name) }));
+        await store.save(fixed);
+        const names = new Map(fixed.map((h) => [h.fileName, h.name]));
+        list = list.map((h) => (names.has(h.fileName) ? { ...h, name: names.get(h.fileName)! } : h));
+        setMessage((m) =>
+          [m, `Đã bỏ dấu, viết hoa tên người nhận của ${wrong.length} ảnh trong lịch sử (tên tài khoản ngân hàng không có dấu).`]
+            .filter(Boolean)
+            .join(" "),
+        );
       }
       setHistory(list);
     } catch (err) {
@@ -646,7 +659,7 @@ export default function Home() {
     const result: BankFields = {
       bank: normalizeBankName(String(c.bank_raw ?? ""), String(c.bank_code ?? "")),
       account: digitsOnly(String(c.account_number ?? "")),
-      name: String(c.recipient_name ?? "").replace(/\s+/g, " ").trim(),
+      name: bankName(String(c.recipient_name ?? "")),
     };
     const issues = validate(result);
     if (c.uncertain) issues.push(c.note ? `${aiName} không chắc chắn: ${c.note}` : `${aiName} không chắc chắn`);
