@@ -145,3 +145,5 @@ tr.near td:first-child { box-shadow: inset 4px 0 0 var(--warn); }
 .note.warn-orange { color: var(--warn); font-weight: 600; }
 .note.info { color: var(--muted); font-style: italic; }
 .note.ok-text { color: var(--ok); }
+
+.cloud-gate { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }

@@ -90,7 +90,8 @@ const CLAUDE_CONCURRENCY = 3;
 const TESSERACT_WORKERS = 2;
 const PASSWORD_KEY = "ocr-app-password";
 const ENGINE_KEY = "ocr-engine";
-const STORE_KEY = "ocr-history-store";
+// v2: mặc định lưu trên cloud (máy nào cũng thấy); chỉ dùng trình duyệt khi người dùng chọn rõ
+const STORE_KEY = "ocr-store-v2";
 const VERIFY_KEY = "ocr-verify-twice";
 const HEAD = ["STT", "Mã số KH", "Tên CSKD", "MSNV", "Tên NVBH", "Ngân hàng nhận", "Tài khoản/thẻ nhận", "Tên người nhận", "Tên file", "Ghi chú"];
 
@@ -150,7 +151,12 @@ export default function Home() {
   const [tab, setTab] = useState<Tab>("read");
   const [history, setHistory] = useState<HistoryRecord[]>([]);
   const [historyError, setHistoryError] = useState("");
-  const [storeKind, setStoreKind] = useState<StoreKind>("local");
+  const [storeKind, setStoreKind] = useState<StoreKind>("shared");
+  // Mã lỗi cloud gần nhất: bad_password (cần nhập mật khẩu), no_password / no_store (máy chủ chưa cấu hình)
+  const [cloudError, setCloudError] = useState("");
+  const syncedRef = useRef<HistoryStore | null>(null);
+  // Đã đọc xong cài đặt lưu trong trình duyệt (mật khẩu, nơi lưu...) - phải đợi rồi mới kết nối cloud
+  const [settingsReady, setSettingsReady] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const passwordRef = useRef("");
   passwordRef.current = password;
@@ -186,8 +192,9 @@ export default function Home() {
       if (localStorage.getItem(VERIFY_KEY) === "0") setVerifyTwice(false);
       const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || "null");
       if (saved) setAi({ ...DEFAULT_SETTINGS, ...saved, keys: { ...DEFAULT_SETTINGS.keys, ...saved.keys }, models: { ...DEFAULT_SETTINGS.models, ...saved.models } });
-      if (localStorage.getItem(STORE_KEY) === "shared") setStoreKind("shared");
+      if (localStorage.getItem(STORE_KEY) === "local") setStoreKind("local");
     } catch {}
+    setSettingsReady(true);
     fetch("/api/ocr")
       .then((r) => r.json())
       .then((info: ServerInfo) => setServer(info))
@@ -199,17 +206,29 @@ export default function Home() {
   useEffect(() => {
     const local = loadLocalHskh();
     setHskh(local);
-    if (store.kind !== "shared") return;
+    if (store.kind !== "shared" || !settingsReady) return;
+    if (!historyLoaded || historyError) return; // chờ kết nối cloud thành công
     fetch("/api/hskh", { headers: { "x-app-password": passwordRef.current } })
       .then((r) => (r.ok ? r.json() : null))
-      .then((remote: HskhData | null) => {
-        if (remote?.entries && (!local || remote.importedAt > local.importedAt)) {
+      .then(async (remote: HskhData | null) => {
+        if (remote?.entries && (!local || remote.importedAt >= local.importedAt)) {
           setHskh(remote);
           saveLocalHskh(remote);
+        } else if (local) {
+          // Cloud chưa có HSKH hoặc bản trên máy này mới hơn: đưa lên cloud
+          const res = await fetch("/api/hskh", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", "x-app-password": passwordRef.current },
+            body: JSON.stringify(local),
+          });
+          if (res.ok)
+            setMessage((m) =>
+              [m, `Đã đưa HSKH "${local.fileName}" (${local.count} KH) của máy này lên cloud.`].filter(Boolean).join(" "),
+            );
         }
       })
       .catch(() => {});
-  }, [store, historyLoaded]);
+  }, [store, historyLoaded, historyError, settingsReady]);
 
   async function onUploadHskh(file: File) {
     try {
@@ -223,7 +242,7 @@ export default function Home() {
           headers: { "Content-Type": "application/json", "x-app-password": password },
           body: JSON.stringify(data),
         });
-        where = res.ok ? "máy chủ (dùng chung)" : "trình duyệt này (chưa lưu được lên máy chủ)";
+        where = res.ok ? "cloud (máy nào cũng thấy)" : "trình duyệt này (chưa lưu được lên cloud)";
       }
       setMessage(`Đã nạp HSKH "${file.name}": ${data.count} khách hàng, lưu trên ${where}.`);
     } catch (err) {
@@ -234,13 +253,29 @@ export default function Home() {
   const reloadHistory = useCallback(async () => {
     setHistoryLoaded(false);
     try {
-      setHistory(await store.getAll());
+      let list = await store.getAll();
       setHistoryError("");
+      setCloudError("");
+      // Lần đầu kết nối cloud trên máy này: đưa lịch sử đang có trên trình duyệt lên cloud
+      // (chỉ những ảnh cloud chưa có, không ghi đè dữ liệu trên cloud)
+      if (store.kind === "shared" && syncedRef.current !== store) {
+        syncedRef.current = store;
+        const onCloud = new Set(list.map((h) => h.fileName));
+        const localOnly = (await getAllHistory().catch(() => [])).filter((h) => !onCloud.has(h.fileName));
+        if (localOnly.length) {
+          await store.save(localOnly);
+          await store.flush();
+          list = await store.getAll();
+          setMessage((m) => [m, `Đã đưa ${localOnly.length} ảnh trong lịch sử của máy này lên cloud.`].filter(Boolean).join(" "));
+        }
+      }
+      setHistory(list);
     } catch (err) {
       setHistory([]);
+      setCloudError(store.kind === "shared" ? ((err as { code?: string }).code ?? "error") : "");
       setHistoryError(
         store.kind === "shared"
-          ? `Lịch sử dùng chung: ${err instanceof Error ? err.message : err}`
+          ? `Lịch sử trên cloud: ${err instanceof Error ? err.message : err}`
           : "Trình duyệt không cho lưu lịch sử (có thể đang ở chế độ ẩn danh). Kết quả sẽ không được nhớ.",
       );
     } finally {
@@ -248,8 +283,8 @@ export default function Home() {
     }
   }, [store]);
   useEffect(() => {
-    void reloadHistory();
-  }, [reloadHistory]);
+    if (settingsReady) void reloadHistory();
+  }, [reloadHistory, settingsReady]);
   historyRef.current = history;
 
   // Lịch sử dùng chung: gửi nốt phần đang chờ khi rời tab
@@ -916,6 +951,33 @@ export default function Home() {
       {historyError && <div className="notice">{historyError}</div>}
       {message && <div className="notice">{message}</div>}
 
+      {storeKind === "shared" && cloudError === "bad_password" && (
+        <section className="panel cloud-gate">
+          <span className="field-label">Dữ liệu chung trên cloud</span>
+          <span className="hint">
+            Nhập mật khẩu truy cập để xem Lịch sử và HSKH dùng chung (mỗi máy chỉ cần nhập một lần).
+          </span>
+          <input
+            type="password"
+            className="password"
+            placeholder="Mật khẩu truy cập"
+            aria-label="Mật khẩu cloud"
+            value={password}
+            onChange={(e) => onPasswordChange(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && void reloadHistory()}
+          />
+          <button className="btn primary" onClick={() => void reloadHistory()}>
+            Kết nối
+          </button>
+        </section>
+      )}
+      {storeKind === "shared" && (cloudError === "no_password" || cloudError === "no_store") && (
+        <div className="notice">
+          Cloud chưa sẵn sàng trên máy chủ ({historyError.replace(/^Lịch sử trên cloud: /, "")}). Tạm thời có thể chọn
+          &quot;Chỉ trình duyệt này&quot; ở tab Cài đặt AI.
+        </div>
+      )}
+
       {tab === "settings" && (
         <>
           <section className="panel ai">
@@ -1014,7 +1076,7 @@ export default function Home() {
                 disabled={busy}
                 onChange={() => changeStore("local")}
               />
-              Trình duyệt này
+              Chỉ trình duyệt này
             </label>
             <label className="radio">
               <input
@@ -1024,7 +1086,7 @@ export default function Home() {
                 disabled={busy}
                 onChange={() => changeStore("shared")}
               />
-              Máy chủ (dùng chung nhiều máy / nhiều người)
+              Cloud - máy nào cũng thấy (khuyên dùng)
             </label>
             {storeKind === "shared" && (
               <>
@@ -1035,13 +1097,13 @@ export default function Home() {
                   Kết nối lại
                 </button>
                 <button className="btn sm" disabled={busy || !!historyError} onClick={copyLocalToShared}>
-                  Chuyển lịch sử từ trình duyệt lên máy chủ
+                  Đưa lịch sử của máy này lên cloud
                 </button>
               </>
             )}
             <span className="hint full">
               {storeKind === "shared"
-                ? "Lịch sử nằm trên máy chủ (Vercel Blob, riêng tư), ai có mật khẩu truy cập đều thấy. Nhập mật khẩu ở trên rồi bấm Kết nối lại."
+                ? "Lịch sử và HSKH nằm trên cloud (Vercel Blob, riêng tư): mở web ở máy nào cũng thấy, ai có mật khẩu truy cập đều xem được. Nhập mật khẩu ở trên rồi bấm Kết nối lại."
                 : "Lịch sử chỉ nằm trên trình duyệt này: máy khác hoặc trình duyệt khác sẽ không thấy. Dùng Sao lưu ở tab Lịch sử để giữ một bản."}{" "}
               Key và mật khẩu luôn chỉ lưu trên trình duyệt này.
             </span>
@@ -1226,7 +1288,7 @@ export default function Home() {
         <HskhTab
           hskh={hskh}
           busy={busy}
-          storeLabel={storeKind === "shared" ? "máy chủ (dùng chung)" : "trình duyệt này"}
+          storeLabel={storeKind === "shared" ? "cloud (máy nào cũng thấy)" : "chỉ trình duyệt này"}
           unmatched={hskhUnmatched}
           onUpload={onUploadHskh}
           onClear={() => {
@@ -1240,7 +1302,7 @@ export default function Home() {
         <HistoryTab
           records={history}
           busy={busy || !historyLoaded}
-          storeLabel={storeKind === "shared" ? "Máy chủ (dùng chung)" : "Trình duyệt này"}
+          storeLabel={storeKind === "shared" ? "Cloud (máy nào cũng thấy)" : "Chỉ trình duyệt này"}
           warnings={historyWarnings}
           staffOf={(code) => lookupHskh(hskh, code)}
           loadThumb={store.loadThumb}
