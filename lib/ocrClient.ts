@@ -32,7 +32,7 @@ const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
  * hoặc mất mạng, chờ tăng dần 2s, 4s, 8s...
  */
 export async function postOcr(
-  payload: { image: string; mediaType: string; provider?: "claude" | "gemini"; model?: string },
+  payload: { image: string; mediaType: string; provider?: "claude" | "gemini"; model?: string; mode?: "verify" },
   opts: ReadOptions,
 ): Promise<ClaudeResult> {
   const { retries = 4, baseDelayMs = 2000, fetchImpl = fetch, sleep = defaultSleep } = opts;

@@ -84,3 +84,9 @@ test("parseFileName với tên file thật trên ổ mạng", () => {
     businessName: "HỘ KINH DOANH NHÀ THUỐC ÁNH TRANG 2",
   });
 });
+
+test("parseOcrText ghép số tài khoản/thẻ bị xuống dòng", () => {
+  const r = parseOcrText("Tài khoản/thẻ nhận\n9704 1234 5678\n9012 345\nTên người nhận\nNGUYEN VAN A");
+  assert.equal(r.account, "97041234567890123 45".replace(/\D/g, ""));
+  assert.equal(r.name, "NGUYEN VAN A");
+});
