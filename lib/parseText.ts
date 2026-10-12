@@ -1,4 +1,4 @@
-import { digitsOnly, stripDiacritics } from "./text.ts";
+import { bankName, digitsOnly, stripDiacritics } from "./text.ts";
 
 export interface BankFields {
   bank: string;
@@ -75,7 +75,7 @@ export function parseOcrText(text: string): BankFields {
   const nameLines = linesAfter(LABELS.name, /ngan\s*hang/)
     .map((l) => l.replace(/[^\p{L}\p{N}\s.&-]/gu, "").trim())
     .filter((l) => score(l) >= 2);
-  const name = fixStraySpaces(nameLines.slice(0, 3).join(" "));
+  const name = bankName(fixStraySpaces(nameLines.slice(0, 3).join(" ")));
 
   return { bank, account, name };
 }

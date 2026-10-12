@@ -50,7 +50,7 @@ const FIELDS = {
   bank_code: "Mã/tên viết tắt ngân hàng (vd AGRIBANK, VIETCOMBANK, BIDV). Rỗng nếu không thấy.",
   account_number: "Số 'Tài khoản/thẻ nhận', chỉ gồm chữ số (giữ nguyên số 0 ở đầu), không có khoảng trắng.",
   recipient_name:
-    "'Tên người nhận' chép NGUYÊN VĂN, giữ nguyên dấu/không dấu và chữ hoa/thường; nếu tên xuống nhiều dòng thì ghép đủ tất cả các dòng.",
+    "'Tên người nhận' chép NGUYÊN VĂN bằng chữ IN HOA KHÔNG DẤU đúng như ảnh (tên chủ tài khoản ngân hàng không có dấu, tuyệt đối không tự thêm dấu); nếu tên xuống nhiều dòng thì ghép đủ tất cả các dòng.",
   note: "Ghi chú ngắn nếu uncertain = true hoặc ảnh không đúng dạng.",
 } as const;
 

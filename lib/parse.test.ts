@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseFileName } from "./filename.ts";
+import { bankName } from "./text.ts";
 import { parseOcrText } from "./parseText.ts";
 import { normalizeBankName } from "./banks.ts";
 
@@ -27,8 +28,17 @@ Ho Kinh Doanh An Binh`;
   assert.deepEqual(parseOcrText(text), {
     bank: "AGRIBANK - Ngân hàng Nôn...",
     account: "4705235387979",
-    name: "Ho Kinh Doanh An Binh",
+    name: "HO KINH DOANH AN BINH",
   });
+});
+
+test("tên người nhận luôn IN HOA KHÔNG DẤU: bỏ dấu Tesseract tự thêm", () => {
+  const text = `Tên người nhận
+HO KINH DOANH NHÀ THUOC ANH MAN - DAO THỊ BAO CHAU
+Ngân hàng nhận
+MB`;
+  assert.equal(parseOcrText(text).name, "HO KINH DOANH NHA THUOC ANH MAN - DAO THI BAO CHAU");
+  assert.equal(bankName("  quay thuoc tan duoc TUẦN   Huyền đức "), "QUAY THUOC TAN DUOC TUAN HUYEN DUC");
 });
 
 test("normalizeBankName khôi phục tên bị cắt", () => {
