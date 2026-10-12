@@ -215,3 +215,23 @@ test("một lô lỗi giữa chừng: lô đã lưu bỏ khỏi hàng chờ, lô
   assert.equal(outbox(storage).length, 0);
   store.dispose();
 });
+
+test("đọc xong ảnh nào gửi ngay ảnh đó, không chờ lần gửi trước xong", async () => {
+  const { server } = setup();
+  const slow = (async (url: string, init: RequestInit) => {
+    if (init.method === "POST") await new Promise((r) => setTimeout(r, 100));
+    return server.fetchImpl(url, init);
+  }) as unknown as typeof fetch;
+  const store = createSharedStore(() => "pw", { fetchImpl: slow, storage: memStorage(), mirror: memMirror(), flushDelay: 1 });
+  await store.save([rec("a.jpg")]);
+  await new Promise((r) => setTimeout(r, 15)); // a đang gửi
+  await store.save([rec("b.jpg")]);
+  await new Promise((r) => setTimeout(r, 140));
+  // Gửi lần lượt thì b chỉ xong sau ~200ms; gửi ngay thì cả hai đã lên cloud
+  assert.deepEqual([...server.s.db.keys()].sort(), ["a.jpg", "b.jpg"]);
+  assert.equal(server.s.posts, 2, "mỗi ảnh một lần gửi, không gom chờ");
+  await store.flush();
+  assert.equal(store.status().pending, 0);
+  assert.equal(store.status().sending, false);
+  store.dispose();
+});
