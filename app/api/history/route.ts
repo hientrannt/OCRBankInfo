@@ -14,7 +14,7 @@ export async function GET(req: Request) {
   return NextResponse.json({
     enabled: true,
     records: records.map(({ thumbBatch, ...r }) => ({ ...r, hasThumb: Boolean(thumbBatch) })),
-  });
+  }, { headers: { "Cache-Control": "no-store" } });
 }
 
 /** Ghi/ghi đè một lô bản ghi (kèm ảnh thu nhỏ base64 nếu có) */

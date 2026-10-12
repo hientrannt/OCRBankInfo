@@ -83,10 +83,22 @@ dữ liệu.
 
 - Lần đầu mở web trên một máy, app hiện ô **Dữ liệu chung trên cloud** ở đầu trang: nhập mật khẩu truy cập
   (`APP_PASSWORD`) một lần, trình duyệt sẽ nhớ.
-- Máy đó đang có lịch sử / HSKH lưu riêng trên trình duyệt thì app **tự đưa lên cloud** (chỉ phần cloud chưa có,
-  không ghi đè). HSKH trên máy mới hơn bản trên cloud cũng được đưa lên.
+- **Không mất ảnh khi cloud lỗi:** ảnh đọc xong được ghi ngay vào trình duyệt và vào hàng chờ, chỉ bỏ khỏi hàng
+  chờ khi cloud xác nhận đã lưu. Mất mạng, cloud lỗi, sai mật khẩu hay đóng trang giữa chừng thì app tự gửi lại
+  (lần sau mở app cũng gửi tiếp). Dòng trạng thái dưới các tab cho biết: *Đã lưu hết lên cloud*, *Đang lưu N ảnh…*
+  hoặc *N ảnh chưa lên cloud* (kèm nút **Gửi lại ngay**).
+- **Lưu bảng lên cloud** (tab Đọc ảnh): đưa các dòng đang có trong bảng lên cloud, chọn
+  - *Thêm / cập nhật* vào lịch sử cloud, hoặc
+  - *Thay toàn bộ lịch sử cloud bằng bảng này*: xóa trên cloud các ảnh không có trong bảng.
+
+  Xong app đọc lại từ cloud để kiểm tra từng ảnh (đủ ảnh, đúng ngân hàng, STK, tên).
+- **Xóa** ở tab Lịch sử (từng ảnh hoặc Xóa toàn bộ) là xóa trên cloud, máy nào cũng mất theo; ảnh đã xóa không tự
+  hiện lại. Bỏ HSKH cũng bỏ trên cloud.
+- Ảnh chỉ có trên trình duyệt của máy này (lưu từ trước khi dùng cloud) không tự đưa lên; dòng trạng thái có nút
+  **Đưa N ảnh chỉ có trên máy này lên cloud** nếu muốn.
+- HSKH tải lên được lưu lên cloud; máy nào có HSKH mới hơn bản trên cloud thì tự đưa lên.
 - Muốn chỉ lưu trên một máy: tab **Cài đặt AI** → Nơi lưu lịch sử → **Chỉ trình duyệt này**.
-- Gói miễn phí của Vercel Blob giới hạn số lượt ghi mỗi tháng; app gom 25 ảnh/lần ghi để tiết kiệm.
+- Gói miễn phí của Vercel Blob giới hạn số lượt ghi mỗi tháng; app gom 10 ảnh/lần ghi.
 - Chạy trên máy riêng (không phải Vercel): dữ liệu "cloud" lưu ở thư mục `.data/ocr-history`.
 
 ## HSKH: dò MSNV nhân viên bán hàng
