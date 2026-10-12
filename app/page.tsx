@@ -132,6 +132,10 @@ export default function Home() {
   const [message, setMessage] = useState("");
   const [ai, setAi] = useState<AiSettings>(DEFAULT_SETTINGS);
   const [showKey, setShowKey] = useState(false);
+  const [keyCheck, setKeyCheck] = useState<{ state: "idle" | "checking" | "ok" | "bad"; text: string }>({
+    state: "idle",
+    text: "",
+  });
   const [tab, setTab] = useState<Tab>("read");
   const [history, setHistory] = useState<HistoryRecord[]>([]);
   const [historyError, setHistoryError] = useState("");
@@ -229,6 +233,7 @@ export default function Home() {
   }
 
   const provider = ai.provider;
+  useEffect(() => setKeyCheck({ state: "idle", text: "" }), [ai]);
   const userKey = ai.keys[provider].trim();
   const serverHasKey = (info: ServerInfo | null, p: Provider) =>
     Boolean(info?.serverKeys ? info.serverKeys[p] : p === "claude" && info?.hasKey);
@@ -236,6 +241,30 @@ export default function Home() {
   const usingServerKey = !userKey && serverHasKey(server, provider);
   const engineShown: Engine = aiReady ? selectedEngine : "tesseract";
   const aiName = provider === "gemini" ? "Gemini" : "Claude";
+
+  /** Gọi /api/check-key: hỏi thông tin model bằng key đang dùng (không tốn lượt đọc ảnh) */
+  async function checkKey() {
+    setKeyCheck({ state: "checking", text: "" });
+    try {
+      const res = await fetch("/api/check-key", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-app-password": password,
+          ...(userKey ? { "x-user-api-key": userKey } : {}),
+        },
+        body: JSON.stringify({ provider, model: ai.models[provider].trim() || undefined }),
+      });
+      const data = await res.json();
+      setKeyCheck(
+        data.ok
+          ? { state: "ok", text: `Key dùng được · model ${data.displayName || data.model}` }
+          : { state: "bad", text: data.error || "Key không dùng được" },
+      );
+    } catch {
+      setKeyCheck({ state: "bad", text: "Không kết nối được máy chủ" });
+    }
+  }
 
   function onPasswordChange(value: string) {
     setPassword(value);
@@ -827,6 +856,16 @@ export default function Home() {
             <a href={AI[provider].keyUrl} target="_blank" rel="noreferrer">
               Lấy API key {aiName}
             </a>
+            <button
+              className="btn sm"
+              disabled={busy || keyCheck.state === "checking" || !aiReady}
+              onClick={checkKey}
+            >
+              {keyCheck.state === "checking" ? "Đang kiểm tra…" : "Kiểm tra key"}
+            </button>
+            {keyCheck.state !== "idle" && keyCheck.state !== "checking" && (
+              <span className={`key-status ${keyCheck.state === "ok" ? "ok" : "missing"}`}>{keyCheck.text}</span>
+            )}
             <span className={`key-status ${aiReady ? "ok" : "missing"}`}>
               {userKey
                 ? "Dùng key bạn nhập (lưu trên trình duyệt này)"
